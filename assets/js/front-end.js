@@ -1,12 +1,19 @@
 /**
  * beauVoyage front-end behaviour.
  *
- * Previously this file opened with `$ = jQuery.noConflict();` at global scope,
- * which both created an implicit global and stripped `$` from every other
- * script on the page. It was also enqueued with no `jquery` dependency, so on
- * any page where jQuery loaded later the first line threw and nothing below it
- * ran. The dependency is now declared in voyage.php and the handler is scoped.
+ * The assignment below looks like bad practice and is load-bearing. WordPress
+ * runs jQuery in noConflict mode, so `window.$` is never defined by core, and
+ * this file has historically been what defines it for the whole site. The
+ * digital-nomad-child theme calls `$()` at top level in two places --
+ * assets/js/main.js:101 and assets/js/list-stories.js:15 -- so removing it
+ * threw "TypeError: $ is not a function" on every page of symphony.beau.voyage
+ * and took both theme scripts down with it.
+ *
+ * Keep it, and keep this script loading in the head ahead of the theme's, until
+ * the theme is changed to stop depending on a global `$`.
  */
+window.$ = window.$ || jQuery;
+
 jQuery( function ( $ ) {
 	'use strict';
 

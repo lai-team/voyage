@@ -440,14 +440,21 @@ function bv_enqueue_front_end_styles(){
 add_action('wp_enqueue_scripts', 'bv_enqueue_front_end_scripts');
 function bv_enqueue_front_end_scripts() {
 
-	// jQuery is a real dependency of this script and was not declared, so on any
-	// page where jQuery loaded later the file threw on its first line.
+	/*
+	 * jQuery is a real dependency and was not declared, so this relied on
+	 * jQuery happening to load first. Declared now.
+	 *
+	 * $in_footer stays false. This script defines the global `$` that the
+	 * digital-nomad-child theme's main.js and list-stories.js call at top
+	 * level, so it has to run before them -- moving it to the footer broke
+	 * both. See the comment at the top of front-end.js.
+	 */
 	wp_enqueue_script(
 		'bv-front-end',
 		BV_PLUGIN_DIR_URL . 'assets/js/front-end.js',
 		array( 'jquery' ),
 		filemtime( __DIR__ . '/assets/js/front-end.js' ),
-		true
+		false
 	);
 
 	/*
