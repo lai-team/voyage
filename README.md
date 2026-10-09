@@ -32,47 +32,49 @@ and reads the `$special_categories` global.
 
 | Constant | Used for |
 | --- | --- |
+| `BASIC_ID` / `PREMIUM_ID` | PMS subscription plan ids |
+| `PREMIUM_SPACE_LIMIT` | Upload quota for premium subsites |
+| `MIN_LENGTH_URL` | Minimum subsite slug length |
 | `EP_HOST` | ElasticPress endpoint |
-| `ES_AWS_KEY` / `ES_AWS_SECRET` | SigV4 signing of ElasticPress requests |
+| `ES_AWS_KEY` / `ES_AWS_SECRET` / `AWS_REGION` | SigV4 signing of ElasticPress requests |
 | `EVENTS_POSTTYPE` | The Events Calendar post type |
 | `GOOG_MAP_KEY` | Google Maps key, injected into ACF and TEC |
+| `GOOG_TRANSLATEv2_KEY` / `GOOG_TRANSLATEv2_CHARLIMIT` | TranslatePress machine translation |
 | `WP_GEOMETA_DEBUG` | WP-GeoMeta debug level |
+
+None of these is guarded with `defined()` at its point of use, so a staging or
+rebuilt environment without this exact `wp-config.php` fataled on PHP 8. The
+ElasticPress ones are now guarded; the rest are not.
 
 ### Defined in the plugin
 
 `MAIN_TAB_NAME` and `BV_PLUGIN_DIR_URL` in `voyage.php`; `CDN_URL` in
-`includes/cdn_rewrite.php` (currently hardcoded to `//cdn.beau.voyage`).
+`includes/cdn_rewrite.php` (defaults to `//cdn.beau.voyage`, overridable from
+`wp-config.php`).
 
-### Referenced but **not defined anywhere**
+### Referenced but not defined anywhere
 
-These are read by live code paths yet are not defined in this plugin, in
-`wp-config.php`, or anywhere else in the install. On PHP 8 an undefined
-constant is a fatal `Error`, so any request reaching these lines dies:
+`DB_NAME_BLOGS` was the only genuinely undefined constant in the codebase, read
+at `voyage.php:500` and `:512`. On PHP 8 that is a fatal `Error`, and it was
+thrown part-way through subsite deletion, after the site had already been
+removed. Both references were in the `information_schema` sweep that has since
+been deleted, so nothing reads it now.
 
-| Constant | Referenced at |
-| --- | --- |
-| `BASIC_ID` | `includes/pms_actions.php:135`, `includes/pms_filters.php:18`, `shortcodes/shortcode_subscription.php` (default argument) |
-| `PREMIUM_ID` | `voyage.php:438`, `voyage.php:632` (default argument), `voyage.php:633` |
-| `DB_NAME_BLOGS` | `voyage.php:500`, `voyage.php:512` |
-| `AWS_REGION` | `includes/elasticpress_aws.php:31` |
-| `PMS_GROUP_NAME` | referenced once |
-| `GOOG_TRANSLATEv2_CHARLIMIT` | `includes/trp_filters.php` |
+`PMS_GROUP_NAME` is also undefined but is never read — only a commented-out
+`define()` remains.
 
-`voyage.php:19-21` carries commented-out `define()` calls for `BASIC_ID`,
-`PREMIUM_ID` and `PMS_GROUP_NAME` with placeholder values — they appear to have
-been moved out and never reinstated. Two are used as **default parameter
-values** (`bv_create_subsite(..., $master_id = PREMIUM_ID)` and
-`shortcode_subscription($plan1 = BASIC_ID, ...)`), so they evaluate whenever the
-function is called without that argument.
+> **Correction.** An earlier revision of this README, and the commit message of
+> `64b73b4`, claimed that `BASIC_ID`, `PREMIUM_ID`, `AWS_REGION`,
+> `PMS_GROUP_NAME` and `GOOG_TRANSLATEv2_CHARLIMIT` were undefined. That was
+> wrong: all but `PMS_GROUP_NAME` are defined in `wp-config.php` using double
+> quotes, and the scan that produced the claim only matched single-quoted
+> `define()` calls.
 
 ## Shortcodes
 
 ```
 [bv_register_subsite_form]             Subsite registration form
 [shortcode_subscription]               Subscription plan picker
-[is_user_account_confirmed_shortcode]  Wraps content behind email confirmation
-[delete_subsite_button]                Delete the current user's subsite
-[delete_user_button]                   GDPR account deletion
 ```
 
 ## Layout
@@ -82,7 +84,6 @@ voyage.php                        Bootstrap, role capabilities, subsite lifecycl
 shortcodes/shortcodes.php         Loader for the shortcode files
 shortcodes/register_subsite.php   Subsite registration form
 shortcodes/shortcode_subscription.php  Plan picker
-shortcodes/custom_shortcodes.php  Account-confirmation gate
 includes/pms_actions.php          Paid Member Subscriptions actions, GDPR deletion
 includes/pms_filters.php          Plan output and membership filters
 includes/search_filter.php        Cross-subsite search; private-category exclusion
@@ -96,7 +97,6 @@ includes/gutenbergblocks.php      Allowed block types per role
 includes/cdn_rewrite.php          Rewrites media URLs to the CDN
 includes/spatial_functions.php    Journey statistics
 includes/handle_requests.php      Front-end POST handling for subsite creation
-includes/geometry.php             Legacy postgeom table creation — NOT loaded
 acp-settings/                     Admin Columns Pro layouts (written at runtime)
 assets/                           Admin/front CSS and JS, white-label script
 ```
@@ -116,25 +116,58 @@ assets/                           Admin/front CSS and JS, white-label script
   Pro's file storage at this directory via the `acp/storage/file/directory`
   filter. The files are intended to be version-controlled, but editing columns
   in wp-admin produces uncommitted changes here.
-- **`includes/geometry.php` is not loaded** — its `include` is commented out at
-  `voyage.php:43`.
 
 ## Known issues
 
-- **`includes/geometry.php` does not parse.** `php -l` fails with
-  `syntax error, unexpected token "global"` at line 22: line 21 is
-  `$max_index_length=191` with no terminating semicolon. Harmless only because
-  the file is never included; uncommenting that `include` would white-screen the
-  site. Left as-is in the initial commit so the repository records exactly what
-  is deployed.
-- **The undefined constants above** are PHP 8 fatals on the paths that reach them.
-- **`includes/handle_requests.php:1`** calls
-  `require_once( wp_normalize_path( ABSPATH ) . 'wp-load.php' )` from inside a
-  plugin that WordPress has already loaded, then handles `$_POST` at file scope.
-  It checks a nonce field named `_wp_nonce` — note WordPress's own convention is
-  `_wpnonce`.
+Still open, deliberately — recorded rather than changed:
+
+- **`bv_member_privilege()` is `current_user_can('read_private_posts')`**, and
+  `voyage.php` grants that capability to the entire `contributor` role. "Paying
+  member" therefore evaluates to "any contributor", here and in the `bv_map`
+  REST endpoint. Tightening it decides who can see paid content, so it needs a
+  product decision rather than a guess.
+- **`pms_filters.php` sets `$output = ''`**, discarding what PMS core appended
+  at the same filter priority — which includes the payment-gateway selector.
+  This may mean paid signups fail server-side validation. Unconfirmed: the
+  registration page redirects for anonymous visitors. Check it logged in before
+  changing anything, because if the premise is wrong the fix breaks checkout.
+- **Block restrictions in `gutenbergblocks.php` are UI-only.** `allowed_block_types`
+  filters the inserter; it does not validate `post_content` on save, so block
+  markup can still arrive via the REST API or the code editor. The real control
+  is the `unfiltered_html` capability, which nothing here touches.
+- **`whitelabel.php` grants `manage_privacy_options` to user IDs 1–3**, a
+  persistent capability keyed on a magic numeric range.
+- **`includes/elasticpress_aws.php` borrows the AWS SDK** from the
+  `amazon-polly` plugin's vendor directory. Now guarded, so a missing file
+  degrades instead of fataling — but ElasticPress 5.x ships its own SigV4
+  support and this filter should be retired in favour of it.
+- **`wp-geometa` has been patched locally** (`wp-geoutil.php:714` adds
+  `linestring` and `point` to `get_capabilities()`). Any update to that plugin
+  reverts the patch, at which point `WP_GeoUtil::point()` returns null. The ACF
+  save path no longer discards the user's pin when that happens, but map
+  geometry will stop being generated.
+- **Large forks of upstream code**: `bv_get_adjacent_post()` is ~190 lines of
+  WordPress core's `get_adjacent_post()`, and `bv_pms_output_subscription_plans()`
+  is ~175 lines of PMS 2.4.0's `pms_output_subscription_plans()`. Both are
+  pinned to the version they were copied from and must be re-synced by hand.
+- Roughly 430 lines of `voyage.php` are commented-out code inside otherwise-live
+  functions.
 - Indentation is inconsistent between files (`voyage.php` uses tabs, several
   includes use four spaces). Nothing has been reformatted.
+
+Fixed since the initial import — see the commit log on `refactor/inspect-and-fix`
+for the full reasoning on each:
+
+- A logged-in member could strip capabilities from **every user on the network**
+  via the subsite deletion path.
+- Deleting subsite 12 would have dropped the database tables of sites 120–129
+  (`LIKE 'wp_12_%'` without `esc_like()`; `_` is a wildcard).
+- Members who cancelled kept the role their paid plan granted.
+- The AWS request-signing host guard failed open.
+- Editors network-wide, including on `beau.voyage`, were granted `manage_options`.
+- Restricted posts were readable by direct permalink.
+- `includes/geometry.php`, which did not parse *and* redeclared the core
+  function `delete_post_meta()`, was deleted.
 
 ## License
 

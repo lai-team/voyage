@@ -32,26 +32,49 @@ function bv_ep_posttypes($posttypes){
 }
 
 add_action( 'pre_get_posts', 'bv_query_exclude_private');
+
+/**
+ * Hide the restricted category tree from visitors without member privilege.
+ *
+ * Previously gated on `isset( $query->tax_query )`. WP_Query only populates
+ * that property inside the archive branch of parse_query(), so it is null for
+ * is_single / is_page / p / page_id / pagename -- meaning the exclusion applied
+ * to listings and archives but NOT to a direct permalink. Anyone who obtained
+ * the URL of a restricted post could read it.
+ *
+ * It also mutated $query->tax_query->queries behind an @, which is what made
+ * the isset() guard necessary in the first place. Using $query->set() works
+ * uniformly for singular and archive queries and merges with any tax_query the
+ * request already carries.
+ *
+ * This filters queries. It is not access control: anything that fetches the
+ * post outside the main query -- the REST API, a secondary WP_Query, a feed --
+ * is unaffected. Real enforcement belongs in template_redirect with a
+ * current_user_can() check, or in WordPress's own private post status. See
+ * README.md.
+ */
 function bv_query_exclude_private($query){
-        //if( empty( $query->query_vars['suppress_filters'] )) {
-        if( $query->is_main_query() && !bv_member_privilege() && isset( $query->tax_query ) ){
-                //$query->set( 'category__not_in',privcats());
-		$tax_query= array(
-			'taxonomy' => 'category',
-			'include_children' => true,
-			'field'    => 'term_id',
-			'operator' => 'NOT IN',
-			'terms'    => array( 1 ),
-		);
-                #error_log(print_r('Noooo   contribUTOR    ' . json_encode($query->tax_query),true));
-                #error_log(print_r('No   contribUTOR    ' . json_encode($tax_query),true));
-		@$query->tax_query->queries[] = $tax_query;
-		#array_push($query->tax_query->queries, $tax_query);
-		$query->query_vars['tax_query'] = $query->tax_query->queries;
-//                error_log(print_r('Noooo   contribUTOR    ' . json_encode($query->query_vars),true));
-        }else{
- //               error_log(print_r('Privatecontent   ' . json_encode($query->query_vars),true));                                                                  
-        }
+	if ( ! $query->is_main_query() || is_admin() || bv_member_privilege() ) {
+		return;
+	}
+
+	$restricted = array(
+		'taxonomy'         => 'category',
+		'include_children' => true,
+		'field'            => 'term_id',
+		'operator'         => 'NOT IN',
+		'terms'            => array( 1 ),
+	);
+
+	$tax_query = $query->get( 'tax_query' );
+
+	if ( empty( $tax_query ) || ! is_array( $tax_query ) ) {
+		$tax_query = array();
+	}
+
+	$tax_query[] = $restricted;
+
+	$query->set( 'tax_query', $tax_query );
 }
 
 function bv_member_privilege(){
@@ -64,6 +87,12 @@ function privcats($negate=false,$cat_id=1){
 	foreach($cat_objects as $cat){
 		$cat_ids[]=$cat->term_id;
 	}
-	if($negate) $cats_ids=array_map(function($x){return -1*$x;},$cats_ids);
+	// Was `$cats_ids = array_map(..., $cats_ids)` -- an undefined variable on
+	// both sides, so a PHP 8 TypeError, and the result was discarded anyway
+	// because the function returns $cat_ids.
+	if ( $negate ) {
+		$cat_ids = array_map( function( $x ) { return -1 * $x; }, $cat_ids );
+	}
+
 	return $cat_ids;
 }

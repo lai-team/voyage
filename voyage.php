@@ -42,11 +42,6 @@ include_once( __DIR__ . '/includes/search_filter.php');
 include_once( __DIR__ . '/includes/spatial_functions.php');
 include_once( __DIR__ . '/includes/trp_filters.php');
 include_once( __DIR__ . '/includes/cdn_rewrite.php');
-//include_once(BV_PLUGIN_DIR . '/includes/geometry.php');
-//error_log(print_r( BV_PLUGIN_DIR . __DIR__ ,true));
-
-//register_activation_hook( __FILE__ , 'bv_geom_activation' );
-//add_action( 'wpmu_new_blog', 'bv_geom_activation' );
 
 // saving acp settings locally
 add_filter( 'acp/storage/file/directory', function() { return __DIR__ . '/acp-settings'; } );
@@ -55,13 +50,72 @@ add_filter( 'acp/storage/file/directory', function() { return __DIR__ . '/acp-se
 
 //add_filter( 'acp/storage/file/directory/writable', '__return_false' );
 
-$role_editor = get_role( 'editor' );
-$role_editor->add_cap( 'manage_options' );
-$role_editor->remove_cap( 'edit_tribe_venues' );
-$role_editor->remove_cap( 'edit_tribe_organizers' );
+/**
+ * Apply this network's role customisations.
+ *
+ * Previously these six lines ran at file scope on every request, which had
+ * three problems:
+ *
+ *  1. get_role() returns null when the role is absent (a subsite whose
+ *     wp_N_user_roles option is missing, or a partial install). Calling
+ *     ->add_cap() on that is a fatal on PHP 8, with no plugin loaded after it.
+ *  2. WP_Role::add_cap() persists to the *current blog's* user_roles option,
+ *     so this issued a database write on any request where the capability was
+ *     not already present.
+ *  3. Most importantly, because it ran on whichever blog served the request,
+ *     editors on the main site were granted manage_options too. That is the
+ *     capability gating Settings and most plugins' admin pages. The grant is
+ *     meant for subsite owners -- bv_create_subsite() makes each owner an
+ *     editor on their own site -- so it is now scoped to subsites only.
+ *
+ * Runs once per version rather than per request; bump BV_ROLE_CAPS_VERSION to
+ * re-apply.
+ */
+define( 'BV_ROLE_CAPS_VERSION', 2 );
 
-$role_contributor = get_role('contributor');
-$role_contributor->add_cap('read_private_posts');
+function bv_apply_role_caps() {
+	if ( (int) get_option( 'bv_role_caps_version' ) === BV_ROLE_CAPS_VERSION ) {
+		return;
+	}
+
+	$is_main_site = ( get_current_blog_id() === (int) get_main_site_id() );
+
+	$role_editor = get_role( 'editor' );
+	if ( $role_editor ) {
+		// Subsite owners are editors on their own site and need to reach
+		// Settings there. Editors on the main site are a different population
+		// and must not inherit it.
+		if ( $is_main_site ) {
+			$role_editor->remove_cap( 'manage_options' );
+		} else {
+			$role_editor->add_cap( 'manage_options' );
+		}
+
+		$role_editor->remove_cap( 'edit_tribe_venues' );
+		$role_editor->remove_cap( 'edit_tribe_organizers' );
+	}
+
+	/*
+	 * NOTE, deliberately unchanged: bv_member_privilege() in
+	 * includes/search_filter.php is literally
+	 * current_user_can('read_private_posts'), so this grant is what makes the
+	 * private-category gate pass -- for members here, and also for the bv_map
+	 * REST endpoint. Because the capability is attached to the contributor
+	 * *role* rather than to a PMS subscription, "is a paying member" currently
+	 * evaluates to "is any contributor".
+	 *
+	 * Tightening that means deciding who should actually see member content,
+	 * and getting it wrong locks paying members out of what they paid for. It
+	 * is left exactly as it was and recorded in README.md instead.
+	 */
+	$role_contributor = get_role( 'contributor' );
+	if ( $role_contributor ) {
+		$role_contributor->add_cap( 'read_private_posts' );
+	}
+
+	update_option( 'bv_role_caps_version', BV_ROLE_CAPS_VERSION );
+}
+add_action( 'init', 'bv_apply_role_caps' );
 
 function var_error_log( $object=null ){
 	ob_start();                    // start buffer capture
@@ -69,6 +123,25 @@ function var_error_log( $object=null ){
 	$contents = ob_get_contents(); // put the buffer into a variable
 	ob_end_clean();                // end capture
 	error_log( $contents );        // log contents of the result of var_dump( $object )
+}
+
+/**
+ * Category slugs excluded from journey grouping.
+ *
+ * The $special_categories global is published by the bv_geotagged_media
+ * plugin, with no load-order guarantee and no isset() at any of its consumers.
+ * If that plugin is inactive on the current site the global is undefined, and
+ * in_array( $slug, null ) is a TypeError on PHP 8. bv_map wraps the same global
+ * the same way in includes/compat.php.
+ *
+ * @return string[]
+ */
+function bv_special_categories() {
+	if ( isset( $GLOBALS['special_categories'] ) && is_array( $GLOBALS['special_categories'] ) ) {
+		return $GLOBALS['special_categories'];
+	}
+
+	return array();
 }
 
 function logErrors ( $message ){
@@ -367,45 +440,65 @@ function bv_enqueue_front_end_styles(){
 add_action('wp_enqueue_scripts', 'bv_enqueue_front_end_scripts');
 function bv_enqueue_front_end_scripts() {
 
-	wp_enqueue_script( 'bv-front-end', BV_PLUGIN_DIR_URL . 'assets/js/front-end.js',false);
+	/*
+	 * jQuery is a real dependency and was not declared, so this relied on
+	 * jQuery happening to load first. Declared now.
+	 *
+	 * $in_footer stays false. This script defines the global `$` that the
+	 * digital-nomad-child theme's main.js and list-stories.js call at top
+	 * level, so it has to run before them -- moving it to the footer broke
+	 * both. See the comment at the top of front-end.js.
+	 */
+	wp_enqueue_script(
+		'bv-front-end',
+		BV_PLUGIN_DIR_URL . 'assets/js/front-end.js',
+		array( 'jquery' ),
+		filemtime( __DIR__ . '/assets/js/front-end.js' ),
+		false
+	);
 
-	$delete_url = add_query_arg( array(
-		'pms_user'   => get_current_user_id(),
-		'pms_action' => 'pms_delete_subsite',
-		'pms_nonce'  => wp_create_nonce( 'pms-user-own-subsite-deletion'),
-	), home_url());
+	/*
+	 * Only mint the deletion credentials for someone who actually has a site to
+	 * delete. This used to run for every logged-in visitor on every front-end
+	 * page, publishing a ready-to-use URL and a valid nonce into the page
+	 * source — which is how a member with no subsite could reach the destructive
+	 * path at all. See bv_delete_user_subsite().
+	 */
+	$owned_site_id = is_user_logged_in()
+		? absint( get_user_meta( get_current_user_id(), 'user_blog', true ) )
+		: 0;
+
+	$delete_url = '';
+	$delete_nonce = '';
+
+	if ( $owned_site_id > 1 ) {
+		$delete_url   = add_query_arg( array(
+			'pms_user'   => get_current_user_id(),
+			'pms_action' => 'pms_delete_subsite',
+		), home_url() );
+		$delete_nonce = wp_create_nonce( 'pms-user-own-subsite-deletion_' . get_current_user_id() );
+	}
 
 	// Send variables to the javascript file
 	wp_localize_script( 'bv-front-end', 'bvVar', array(
 		'theme_dir_uri'     => get_template_directory_uri(),
 		'delete_url'        => $delete_url,
+		'delete_nonce'      => $delete_nonce,
 		'delete_text'       => sprintf(__('Type %s to confirm deleting your subsite and all data associated with it:', 'paid-member-subscriptions'), 'DELETE' ),
 		'delete_error_text' => sprintf(__('You did not type %s. Try again!', 'paid-member-subscriptions'), 'DELETE' ),
 		'main_tab'          => MAIN_TAB_NAME,
-		'user_email'    =>is_user_logged_in(  )?get_userdata(get_current_user_id())->user_email:'',
+		'user_id'           => get_current_user_id(),
+		'user_email'        => is_user_logged_in() ? get_userdata( get_current_user_id() )->user_email : '',
 	));
 }
 
-/**
- * Redirects to a given url
- * @param string $u The url where you want to send the user
+/*
+ * The global redirect() helper that used to live here has been removed. It
+ * called header('Location: …') on an unvalidated URL and its only live caller
+ * passed $_SERVER['HTTP_REFERER'] straight into it — an open redirect. Call
+ * sites now use wp_safe_redirect(), which restricts the destination to this
+ * host. The name was also a collision risk in the global namespace.
  */
-function redirect($u){
-	header('Location: ' . $u );
-	exit();
-
-}
-
-/**
- * Returns the user site/blog url
- * @param int $user_id the user ID
- * @return string|boolean the user blog url or if none False
- */
-function get_user_blog_url($user_id){
-	$blog=get_blog_details(array('blog_id'=>get_user_meta( $user_id,'user_blog',true)));
-	// print_r($blog);
-	return $blog->siteurl;
-}   
 
 // /**
 //  * Returns the user site/blog id
@@ -423,16 +516,23 @@ function get_user_blog_id($user_id){
  *
  */
 function bv_remove_subsite_subscription( $user_id, $site_id ) {
-	if(!(get_user_meta( $user_id,'user_blog',true) == $site_id)){
+	$user_id = absint( $user_id );
+	$site_id = absint( $site_id );
+	$owned_id = absint( get_user_meta( $user_id, 'user_blog', true ) );
 
-		print_r(get_user_meta($user_id,'user_blog'));
-		return;
+	// Both sides used to be compared loosely, so a user with no subsite passed
+	// this check with '' == '' and went on to delete nothing-in-particular.
+	// See bv_delete_user_subsite() for what that cost.
+	if ( ! $owned_id || $owned_id !== $site_id ) {
+		return new WP_Error(
+			'bv_not_site_owner',
+			__( 'You do not own that site.', 'paid-member-subscriptions' )
+		);
 	}
-	$plan_id = get_user_meta( $user_id,'private_plan',true);
-	pms_member_delete_user_subscription_abandon($user_id);
-	//error_log(print_r('userid passes'.$user_id,true));
-	$delete_subsite = bv_delete_user_subsite($user_id);
-	return $delete_subsite;
+
+	pms_member_delete_user_subscription_abandon( $user_id );
+
+	return bv_delete_user_subsite( $user_id );
 }
 
 function bv_sync_plans($plan_id_1, $plan_id_2){
@@ -465,119 +565,79 @@ function bv_sync_plans($plan_id_1, $plan_id_2){
  * @param $user_id
  *
  */
-function bv_delete_user_subsite($bv_user_id){
-	if(is_user_logged_in()) {
-		//error_log(print_r('logged in: '. is_user_logged_in()));
-		//error_log(print_r('current user: '. get_current_user_id(),true));
-		//error_log(print_r('passed user: '. $bv_user_id,true));
-		//$user_id=get_current_user_id();
-		//error_log(print_r('passed user: '. $bv_user_id,true));
-	   /* 
-	    if( empty($user_id )){
-		    echo 787;
-	    }else{
-		    echo 121;
-	    }
-	    */
+function bv_delete_user_subsite( $bv_user_id ) {
+	$bv_user_id = absint( $bv_user_id );
 
-		if(get_current_user_id() == $bv_user_id){
-			if(is_super_admin( $bv_user_id )){
-				throw new Exception("Please log in before performing this action");
-			}
-			else{
-				if (!function_exists('wpmu_delete_blog')) {
-					require_once ABSPATH . 'wp-admin/includes/ms.php';
-				}
-				$subsite_id = get_user_meta($bv_user_id, 'user_blog', true);
-				$plan_id = get_user_meta($bv_user_id,'private_plan',true);
-				if($subsite_id == get_main_site_id(  ))throw new Exception('You cannot delete main site');
-				wpmu_delete_blog( $subsite_id, true );
-				delete_user_meta( $bv_user_id, 'user_blog' );
-				delete_user_meta( $bv_user_id, 'private_plan' );
-				switch_to_blog( get_main_site_id() );
-				wp_delete_post( $plan_id ); // Deletes the plan
-				global $wpdb;
-				if ($subsite_id > 10){			 
-					$res = $wpdb->get_results( 'SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = "' . 
-						DB_NAME_BLOGS . '" AND TABLE_NAME LIKE "'. $wpdb->prefix . $subsite_id . '_%"');
-					foreach( $res as $r )
-					{
-						$table_name = $r->TABLE_NAME;
-						$wpdb->query( 'DROP TABLE ' . $table_name );
-					}
-					/*
-					$sql = <<<EOT
-SET GROUP_CONCAT_MAX_LEN=10000;
-SET @tbls = (SELECT GROUP_CONCAT(TABLE_NAME)
-FROM information_schema.TABLES
-EOT;
-					$sql= $sql. ' WHERE TABLE_SCHEMA = "' . DB_NAME_BLOGS . '"';
-					$sql =$sql . ' AND TABLE_NAME LIKE "'. $wpdb->prefix . $subsite_id . '_%");';
-					$sql = $sql . 'SET @delStmt = CONCAT("DROP TABLE ",  @tbls);';
-					//error_log(print_r($sql,true));
-					$wpdb->prepare($sql);	
-					$wpdb->prepare("PREPARE stmt FROM @delStmt;");
-					$wpdb->query("EXECUTE stmt;");
-					$wpdb->query("DEALLOCATE PREPARE stmt;");
-					 */	
-				}
-				/*
-				$table_name = $wpdb->prefix . $subsite_id . '_loginpress_social_login_details';
-				$sql = "DROP TABLE IF EXISTS $table_name";
-				$wpdb->query($sql);
-				$table_name = $wpdb->prefix . $subsite_id . '_loginpress_limit_login_details';
-				$sql = "DROP TABLE IF EXISTS $table_name";
-				$wpdb->query($sql);
-				$table_name = $wpdb->prefix . $subsite_id . '_postmeta_geo';
-				$sql = "DROP TABLE IF EXISTS $table_name";
-				$wpdb->query($sql);
-				$table_name = $wpdb->prefix . $subsite_id . '_termmeta_geo';
-				$sql = "DROP TABLE IF EXISTS $table_name";
-				$wpdb->query($sql);
-				$table_name = $wpdb->prefix . $subsite_id . '_commentmeta_geo';
-				$sql = "DROP TABLE IF EXISTS $table_name";
-				$wpdb->query($sql);
-				*/
-				//$wpgm = WP_GeoMeta::get_instance();
-				//$wpgm->uninstall();
-				return true;
-			}
-		}
-		else{
-			throw new Exception("You need to be logged in with the account you want to delete");
-		}
+	if ( ! is_user_logged_in() || get_current_user_id() !== $bv_user_id ) {
+		return new WP_Error(
+			'bv_not_logged_in',
+			__( 'You need to be logged in with the account you want to delete.', 'paid-member-subscriptions' )
+		);
 	}
-}
 
-/**
- * Delete logged in user
- *
- * @param $post_id
- *
- */
-function bv_remove_logged_in_user(){
+	if ( is_super_admin( $bv_user_id ) ) {
+		return new WP_Error(
+			'bv_super_admin',
+			__( 'Super admins cannot delete their own site this way.', 'paid-member-subscriptions' )
+		);
+	}
 
-	global $wpdb;
-	$user_id=get_current_user_id( );
-	// $wpdb->get_results("DELETE FROM wp_users where ID = ".get_current_user_id( ));
-	// echo 'asdfasdioughsiodfgjosiduafhj guiodaf';
-	if (!function_exists('wpmu_delete_blog')) {
+	$subsite_id = absint( get_user_meta( $bv_user_id, 'user_blog', true ) );
+
+	/*
+	 * Everything below destroys data, so establish first that $subsite_id names
+	 * a real, non-main site.
+	 *
+	 * This previously read the meta value as a string and tested
+	 * `$subsite_id == get_main_site_id()`. For a member with no subsite the
+	 * value is '' and that comparison is false on both PHP 7 and 8, so
+	 * wpmu_delete_blog('', true) ran. Inside core that becomes blog id 0:
+	 * switch_to_blog(0) stays on the serving blog, get_site(0) is null so the
+	 * drop is skipped, and get_users(['blog_id' => 0]) skips the capability
+	 * restriction and returns every user in the network — each of whom then
+	 * had remove_all_caps() called on them. Any logged-in member could strip
+	 * capabilities from everyone on the site serving the request.
+	 */
+	if ( $subsite_id < 2 || $subsite_id === absint( get_main_site_id() ) || ! get_site( $subsite_id ) ) {
+		return new WP_Error(
+			'bv_no_subsite',
+			__( 'There is no site associated with this account to delete.', 'paid-member-subscriptions' )
+		);
+	}
+
+	if ( ! function_exists( 'wpmu_delete_blog' ) ) {
 		require_once ABSPATH . 'wp-admin/includes/ms.php';
 	}
-	foreach(get_blogs_of_user( $user_id, true ) as $blog){
-		if($blog->userblog_id != get_main_site_id())
-			wpmu_delete_blog( $blog->userblog_id, true );
+
+	$plan_id = absint( get_user_meta( $bv_user_id, 'private_plan', true ) );
+
+	/*
+	 * wpmu_delete_blog( $id, true ) drops the site's own tables through
+	 * wp_delete_site(). A hand-rolled information_schema sweep used to run
+	 * afterwards; it has been removed because it was both broken and
+	 * destructive:
+	 *
+	 *  - it referenced DB_NAME_BLOGS, which is defined nowhere in the install,
+	 *    so on PHP 8 it threw a fatal Error *after* the site and the plan post
+	 *    were already gone, leaving the teardown half-finished and the caller's
+	 *    redirect unreached; and
+	 *  - it built `LIKE 'wp_12_%'` without esc_like(). In SQL LIKE, `_` matches
+	 *    any single character, so deleting site 12 also matched — and dropped —
+	 *    the tables of sites 120 through 129.
+	 */
+	wpmu_delete_blog( $subsite_id, true );
+
+	delete_user_meta( $bv_user_id, 'user_blog' );
+	delete_user_meta( $bv_user_id, 'private_plan' );
+
+	if ( $plan_id ) {
+		switch_to_blog( get_main_site_id() );
+		wp_delete_post( $plan_id ); // Deletes the plan.
+		restore_current_blog();     // Previously never called, on any exit path.
 	}
-	$q = $wpdb->prepare("DELETE FROM wp_users WHERE ID=$user_id");
-	$wpdb->query($q);
-	wp_logout();
-	// require_once(ABSPATH.'wp-admin/includes/user.php' );
-	// wp_delete_user(wp_get_current_user( )->ID);
-	redirect(get_home_url());
-	// returnError('User Deleted');
+
+	return true;
 }
-
-
 
 
 
@@ -647,6 +707,12 @@ function bv_create_subsite($user_id, $site_url, $site_title, $master_id=PREMIUM_
 	$errors     = $result['errors'];
 
 	if ( $errors->has_errors() ) {
+		// Both were appended to without being initialised, so the first append
+		// warned; and if every error carried severity 'message', $error_messages
+		// was still undefined at the add() below.
+		$messages       = '';
+		$error_messages = '';
+
 		foreach ( $errors->get_error_codes() as $code ) {
 			$severity = $errors->get_error_data( $code );
 			foreach ( $errors->get_error_messages( $code ) as $error_message ) {
@@ -657,7 +723,13 @@ function bv_create_subsite($user_id, $site_url, $site_title, $master_id=PREMIUM_
 				}
 			}
 		}
-		pms_errors()->add('url', __($error_messages, 'paid-member-subsciptions'));
+
+		// Was __($error_messages, 'paid-member-subsciptions') -- __() on a
+		// runtime variable cannot be extracted for translation and does
+		// nothing useful, and the text domain was misspelled. The messages
+		// come from wpmu_validate_blog_signup(), which has already translated
+		// them.
+		pms_errors()->add( 'url', $error_messages !== '' ? $error_messages : $messages );
 		return;
 	}
 
@@ -701,11 +773,22 @@ function bv_create_subsite($user_id, $site_url, $site_title, $master_id=PREMIUM_
 	// Create a new subscription for the subsite
 	$plan_id = bv_duplicate_subscription($master_id, $site_id, $blog->siteurl);
 
-	// Add values to user meta
-	//add_site_meta( $site_id,'private_plan', $plan_id );
-	restore_current_blog(  );
+	/*
+	 * private_plan belongs to the new subsite, so switch to it explicitly.
+	 *
+	 * This previously read restore_current_blog(); update_option(...);
+	 * restore_current_blog(); -- but the single switch opened above had already
+	 * been closed on the line before, so the stack was empty, both calls were
+	 * no-ops returning false, and the option was written to whichever blog was
+	 * current. On the live path that is the main site, so every new subsite
+	 * overwrote the main site's private_plan. The commented-out
+	 * add_site_meta() directly above shows the intended target.
+	 */
+	switch_to_blog( $site_id );
 	update_option( 'private_plan', $plan_id );
-	restore_current_blog(  );
+	restore_current_blog();
+
+	// Add values to user meta
 	add_user_meta( $user_id,'private_plan', $plan_id );
 	add_user_meta( $user_id,'user_blog', $site_id );
 
@@ -728,9 +811,23 @@ function bv_handle_theme_changes($site_id){
 	// Change to a different theme
 	switch_theme( 'digital-nomad-child' );
 
-        $browser_lang=$_COOKIE['trp_language'];
-        error_log(print_r('cookie lang: '.$browser_lang,true));
-        if(!isset($browser_lang) && substr($browser_lang,0,3) != 'en_'){
+        /*
+         * The condition used to be `!isset($browser_lang) && substr(...)`,
+         * evaluated immediately after assigning $browser_lang -- so isset()
+         * was true whenever the cookie existed and the whole TranslatePress
+         * block was skipped in exactly the case it was written for. When the
+         * cookie was absent it warned on the undefined key, then ran the block
+         * with $browser_lang null, writing update_option('WPLANG', null) and a
+         * trp_settings array with null keys into every new subsite.
+         *
+         * The cookie is also unsanitised visitor input going straight into an
+         * option, so it is sanitised and length-checked here.
+         */
+        $browser_lang = isset( $_COOKIE['trp_language'] )
+                ? sanitize_text_field( wp_unslash( $_COOKIE['trp_language'] ) )
+                : '';
+
+        if ( $browser_lang !== '' && substr( $browser_lang, 0, 3 ) !== 'en_' ) {
                 update_option('WPLANG',$browser_lang);
 
 		$trp_settings=array(
@@ -809,6 +906,14 @@ function bv_handle_theme_changes($site_id){
 		'page_template'  => 'page-templates/gateway.php'
 	));
 	 */
+
+	/*
+	 * This was missing entirely. bv_handle_theme_changes() is the last call in
+	 * bv_create_subsite(), which runs on init on the main site, so from that
+	 * point the whole remaining request rendered against the newly created
+	 * subsite -- wrong table prefix, wrong options, wrong theme.
+	 */
+	restore_current_blog();
 }
 
 
@@ -856,7 +961,12 @@ if ( function_exists( 'pms_get_member_subscriptions' ) ) {
 function bv_gm_get_all_meta_values_by_email( $value ){
 	global $wpdb;
 
-	$result = $wpdb->get_results( $wpdb->prepare( "SELECT meta_id,member_subscription_id FROM {$wpdb->prefix}pms_member_subscriptionmeta WHERE meta_key = 'pms_gm_invited_emails' AND meta_value = %s", $value ), 'OBJECT_K' );
+	// base_prefix, not prefix: PMS keeps a single set of tables on the main
+	// site. With the per-blog prefix, a registration on a subsite queried
+	// wp_12_pms_member_subscriptionmeta, which does not exist -- the query
+	// errored, the function returned false, and the caller then tried to
+	// foreach over it.
+	$result = $wpdb->get_results( $wpdb->prepare( "SELECT meta_id,member_subscription_id FROM {$wpdb->base_prefix}pms_member_subscriptionmeta WHERE meta_key = 'pms_gm_invited_emails' AND meta_value = %s", $value ), 'OBJECT_K' );
 
 	if( !empty( $result ) )
 		return $result;
@@ -901,7 +1011,7 @@ function bv_get_adjac_post($current_post, $previous = true, $term_array=array(),
 		'orderby' => 'date',
 	);
 
-	$special_categories_local=$GLOBALS['special_categories'];
+	$special_categories_local = bv_special_categories();
 	$in_same_term = empty($term_array)? false: true;
 	if( $term_array) $arg += array( 'category__and' => $term_array );
 
@@ -913,10 +1023,19 @@ function bv_get_adjac_post($current_post, $previous = true, $term_array=array(),
 	$current_post_date = $current_post->{'post_date'};
 	$adjacent = $previous ? 'previous' : 'next';
 	$arg += array( 'order' => $previous ? 'DESC' : 'ASC');
+	/*
+	 * 'inclusive' => false. WP_Date_Query inherits the top-level 'inclusive'
+	 * into its nested clauses, so `before` became `<=` and the current post
+	 * matched its own "adjacent" query. The theme's load-more
+	 * (digital-nomad-child/functions.php:159, dn_loadn_preview) does not
+	 * de-duplicate, so each page of results repeated the post the reader was
+	 * already on -- its sibling dn_loadn_preview_for_ajax guards against
+	 * exactly this with an explicit ID comparison.
+	 */
 	$arg += array(
-	       	'date_query' => array( 
-			'inclusive' => true,
-			array( $previous ? 'before' : 'after'  => $current_post_date ) 
+	       	'date_query' => array(
+			'inclusive' => false,
+			array( $previous ? 'before' : 'after'  => $current_post_date )
 		)
 	);
 
@@ -928,7 +1047,7 @@ function bv_get_adjac_post($current_post, $previous = true, $term_array=array(),
 function bv_get_adjacent_post($current_post, $previous = true, $term_array=array(), $searchposttype='', $taxonomy = 'category', $excluded_terms='' ) {
 	$in_same_term = empty($term_array)? false: true;
 	$query_posttype = empty($searchposttype)? $current_post->post_type :$searchposttype;
-	$special_categories_local=$GLOBALS['special_categories'];
+	$special_categories_local = bv_special_categories();
 	global $wpdb;
 
 	//$post = get_post();
