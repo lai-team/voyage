@@ -266,28 +266,6 @@ function bv_abandon_child_subscriptions( $owner_id, $subscription_data ){
 	}
 }
 
-/*
-function remove_subscription_from_group( $child_id, $subscription_data ){
-	if( empty( $child_id ) )
-		return;
-
-	$owner_id = pms_get_member_subscription_meta( $child_id, 'pms_group_subscription_owner', true );
-
-	if( empty( $owner_id ) )
-		return;
-
-	pms_delete_member_subscription_meta( $owner_id, 'pms_group_subscription_member', $child_id );
-}
- */
-
-/*
-function bv_activate_member_subscription($sub_id){
-	bv_update_member_subscription($sub_id,'active');
-}
-function bv_expire_member_subscription($sub_id){
-	bv_update_member_subscription($sub_id,'expire');
-}
- */
 function bv_update_member_subscription($sub_id,$status='abandoned'){
 	if ( function_exists( 'pms_get_member_subscription' ) ){
 		$sub_obj= pms_get_member_subscription($sub_id);

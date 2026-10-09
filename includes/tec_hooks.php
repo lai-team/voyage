@@ -1,44 +1,12 @@
 <?php
 
-add_filter('init', 'tribe_set_google_api_key');
-function tribe_set_google_api_key(){
-	if (class_exists('Tribe__Events__Google__Maps_API_Key'))
-	{
-	        //Tribe__Events__Google__Maps_API_Key::$default_api_key = GOOG_MAP_KEY;
-		//if( Tribe__Settings_Manager::get_option("google_maps_js_api_key") != GOOG_MAP_KEY ) Tribe__Settings_Manager::set_option("google_maps_js_api_key",GOOG_MAP_KEY);
-	}
-}
-
-add_filter('init', 'bv_tribe_settings');
-function bv_tribe_settings (){
-	if (class_exists('Tribe__Settings_Manager'))
-	{
-	//if (Tribe__Settings_Manager::get_option( 'eventsSlug')!='itineraries') Tribe__Settings_Manager::set_option( 'eventsSlug', 'itineraries' );
-        //if (Tribe__Settings_Manager::get_option( 'singleEventSlug') != 'itinerary') Tribe__Settings_Manager::set_option( 'singleEventSlug', 'itinerary' );
-        //if (Tribe__Settings_Manager::get_option( 'trash-past-events') != 3 ) Tribe__Settings_Manager::set_option( 'trash-past-events', 3 );
-	}
-}
-/*
-add_filter( 'tribe_field_value', 'bv_populate_field_with_default_api_key' , 8, 2 );
-function bv_populate_field_with_default_api_key( $value_string, $field_name ) {       
-	logErrors('TEC field key: '. $field_name . "   ". $value_string);
-	if ( ! isset( $field_name ) || 'google_maps_js_api_key' !== $field_name ) {
-		return $value_string;
-	}
-
-	if ( ($value_string == "AIzaSyDNsicAsP6-VuGtAb1O9riI3oc_NOb7IOU" || empty( $value_string )) && function_exists('tribe_update_option') ) {
-
-		remove_filter( 'tribe_field_value', array( $this, 'bv_populate_field_with_default_api_key' ), 8, 2 );
-		$value_string = GOOG_MAP_KEY;
-		tribe_update_option(  'google_maps_js_api_key', GOOG_MAP_KEY );
-
-		add_filter( 'tribe_field_value', array( $this, 'bv_populate_field_with_default_api_key' ), 8, 2 );
-	}
-	logErrors('TEC google KEY 2: '. $value_string);
-
-	return $value_string;
-}
- */
+// Two callbacks registered on `init` with entirely commented-out bodies, and a
+// commented copy of TEC's own populate_field_with_default_api_key() carrying
+// TEC's shipped default Google Maps key, were removed here. The key was never
+// ours — it is public in every Events Calendar install — but a dead AIza…
+// string trips every secret scanner that looks at this repository. The site's
+// own key is the GOOG_MAP_KEY constant in wp-config.php, applied by
+// includes/acf_googlefilters.php.
 
 //function bv_null(){return null;}
 

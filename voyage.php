@@ -42,11 +42,6 @@ include_once( __DIR__ . '/includes/search_filter.php');
 include_once( __DIR__ . '/includes/spatial_functions.php');
 include_once( __DIR__ . '/includes/trp_filters.php');
 include_once( __DIR__ . '/includes/cdn_rewrite.php');
-//include_once(BV_PLUGIN_DIR . '/includes/geometry.php');
-//error_log(print_r( BV_PLUGIN_DIR . __DIR__ ,true));
-
-//register_activation_hook( __FILE__ , 'bv_geom_activation' );
-//add_action( 'wpmu_new_blog', 'bv_geom_activation' );
 
 // saving acp settings locally
 add_filter( 'acp/storage/file/directory', function() { return __DIR__ . '/acp-settings'; } );
@@ -396,17 +391,6 @@ function redirect($u){
 
 }
 
-/**
- * Returns the user site/blog url
- * @param int $user_id the user ID
- * @return string|boolean the user blog url or if none False
- */
-function get_user_blog_url($user_id){
-	$blog=get_blog_details(array('blog_id'=>get_user_meta( $user_id,'user_blog',true)));
-	// print_r($blog);
-	return $blog->siteurl;
-}   
-
 // /**
 //  * Returns the user site/blog id
 //  * @param int $user_id the user ID
@@ -548,36 +532,6 @@ EOT;
 		}
 	}
 }
-
-/**
- * Delete logged in user
- *
- * @param $post_id
- *
- */
-function bv_remove_logged_in_user(){
-
-	global $wpdb;
-	$user_id=get_current_user_id( );
-	// $wpdb->get_results("DELETE FROM wp_users where ID = ".get_current_user_id( ));
-	// echo 'asdfasdioughsiodfgjosiduafhj guiodaf';
-	if (!function_exists('wpmu_delete_blog')) {
-		require_once ABSPATH . 'wp-admin/includes/ms.php';
-	}
-	foreach(get_blogs_of_user( $user_id, true ) as $blog){
-		if($blog->userblog_id != get_main_site_id())
-			wpmu_delete_blog( $blog->userblog_id, true );
-	}
-	$q = $wpdb->prepare("DELETE FROM wp_users WHERE ID=$user_id");
-	$wpdb->query($q);
-	wp_logout();
-	// require_once(ABSPATH.'wp-admin/includes/user.php' );
-	// wp_delete_user(wp_get_current_user( )->ID);
-	redirect(get_home_url());
-	// returnError('User Deleted');
-}
-
-
 
 
 
