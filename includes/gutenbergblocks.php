@@ -1,10 +1,14 @@
 <?php
+/*
+ * Note: this only filters the block inserter. It is not access control -- block
+ * markup can still be submitted via the REST API or the code editor, and
+ * nothing here touches the unfiltered_html capability. Recorded in README.md.
+ */
 function wpdocs_allowed_block_types( $allowed_blocks, $post ) {
-	$current_user=wp_get_current_user();
-	//error_log(print_r('currentUser: '. json_encode($current_user),true));
-
-	$user_role = $current_user->roles;
-	if( !in_array( strtolower('administrator'), $user_role ) )
+	// Was `! in_array( 'administrator', $current_user->roles )`, which gave the
+	// restricted block list to multisite Super Admins, whose roles array is
+	// empty on a subsite where they hold no explicit role.
+	if ( ! bv_user_sees_full_admin() )
 		$allowed_blocks = array(
 			'core/block',
 			'core/image',

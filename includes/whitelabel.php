@@ -1,12 +1,32 @@
 <?php
 
-remove_action('admin_init','add_admin_menu_notification_counts');
+/*
+ * The `remove_action('admin_init','add_admin_menu_notification_counts')` that
+ * used to be here never matched anything. TranslatePress registers that
+ * callback as an object method at priority 1000
+ * (translatepress-multilingual/includes/class-plugin-notices.php:85), so a
+ * string callback at the default priority 10 removes nothing -- and this file
+ * is parsed before TRP has registered it anyway.
+ */
+
+/**
+ * Whether the current user should see the full, un-white-labelled admin.
+ *
+ * Previously `! in_array( 'administrator', $current_user->roles )`. That is
+ * wrong on multisite in a way that matters: a Super Admin with no explicit role
+ * on a subsite has an empty roles array, so they were given the *restricted*
+ * admin. Capability checks do not have that problem.
+ *
+ * @return bool
+ */
+function bv_user_sees_full_admin() {
+	return is_super_admin() || current_user_can( 'manage_network' ) || current_user_can( 'activate_plugins' );
+}
+
 add_action('admin_menu','bv_editor_menu',100);
 function bv_editor_menu(){
 	$current_user=wp_get_current_user();
-	//error_log(print_r('currentUser: '. json_encode($current_user),true));
-	$user_role = $current_user->roles;
-	if( !in_array( strtolower('administrator'), $user_role ) ){
+	if( ! bv_user_sees_full_admin() ){
 		remove_submenu_page('edit.php?post_type=tribe_events','edit.php?post_type=tribe_organizer' );  
 		remove_submenu_page('edit.php?post_type=tribe_events','edit.php?post_type=tribe_venue' );  
 		remove_submenu_page('edit.php?post_type=tribe_events','tribe-common' );  
@@ -20,12 +40,26 @@ function bv_editor_menu(){
 
 		//publish_posts
 	}
-	if($current_user->ID <=3) $current_user->add_cap('manage_privacy_options');
+	// Grants a persistent capability based on a magic user-id range. Left in
+	// place because removing it may take away a control someone relies on, but
+	// WP_User::add_cap() writes to usermeta on every admin_menu load, and the
+	// grant follows whoever happens to hold ids 1-3. Recorded in README.md.
+	if ( $current_user->ID && $current_user->ID <= 3 ) {
+		$current_user->add_cap('manage_privacy_options');
+	}
 }
 
 function admin_style() {
-	wp_enqueue_style('admin-styles', __DIR__.'/../assets/css/admin.css');
-	//error_log(print_r(file_get_contents(__DIR__. '/../assets/css/admin.css'),true));
+	// __DIR__ is a filesystem path. Passed as a stylesheet src it was prefixed
+	// with the site URL, so admin.css 404'd on every admin page -- meaning the
+	// white-labelling CSS it exists for has never actually applied -- and the
+	// server's absolute path was printed into the HTML.
+	wp_enqueue_style(
+		'admin-styles',
+		plugins_url( 'assets/css/admin.css', dirname( __FILE__ ) ),
+		array(),
+		filemtime( dirname( __DIR__ ) . '/assets/css/admin.css' )
+	);
 }
 add_action('admin_enqueue_scripts', 'admin_style');
 
@@ -47,26 +81,48 @@ add_action( 'admin_head', function(){
 function enqueue_gutenberg_js() {   
 	wp_enqueue_script(    
 		'replace-animation-script',    
-		plugins_url( 'assets/js/whitelabel.js', __FILE__ ), 
-		array( 'wp-element', 'wp-editor', 'wp-hooks' ),   
-		filemtime( __DIR__ . '/assets/js/whitelabel.js' )
+		// __FILE__ is includes/whitelabel.php, so this resolved to
+		// includes/assets/js/… -- a directory that does not exist.
+		plugins_url( 'assets/js/whitelabel.js', dirname( __FILE__ ) ),
+		array( 'wp-element', 'wp-editor', 'wp-hooks' ),
+		filemtime( dirname( __DIR__ ) . '/assets/js/whitelabel.js' )
 	);
 }
 
 //add_action( 'enqueue_block_editor_assets',  'enqueue_gutenberg_js' );
 
-function cc_gutenberg_register_files() {                                                                                                                                                                    // script file                                                                                                                                                                                          wp_register_script(                                                                                                                                                                                         'cc-block-script',                                                                                                                                                                                              plugins_url( 'assets/js/block-script.js', __FILE__ ),                                                                                                                                           //get_stylesheet_directory_uri() .'assets/js/block-script.js', // adjust the path to the JS file                                                                                                        array( 'wp-blocks', 'wp-edit-post' )                                                                                                                                                                );                                                                                                                                                                                                      // register block editor script                                                                                                                                                                         register_block_type( 'cc/ma-block-files', array(                                                                                                                                                            'editor_script' => 'cc-block-script'                                                                                                                                                                ) );
+function cc_gutenberg_register_files() {
+	// script file
+	wp_register_script(
+		'cc-block-script',
+		// __FILE__ is includes/whitelabel.php, so this used to resolve to
+		// includes/assets/js/block-script.js -- a path that does not exist, so
+		// the script 404'd and never ran.
+		plugins_url( 'assets/js/block-script.js', dirname( __FILE__ ) ),
+		array( 'wp-blocks', 'wp-edit-post' ),
+		filemtime( dirname( __DIR__ ) . '/assets/js/block-script.js' )
+	);
 
+	// register block editor script
+	register_block_type( 'cc/ma-block-files', array(
+		'editor_script' => 'cc-block-script'
+	) );
 }
-add_action( 'init', 'cc_gutenberg_register_files' ); 
+add_action( 'init', 'cc_gutenberg_register_files' );
 
 add_action('in_admin_header', function () {
-//	if (!$is_my_admin_page) return;
+	/*
+	 * Scoped to the users actually being white-labelled. This ran
+	 * unconditionally, so it also suppressed core security and update
+	 * warnings, plugin vulnerability notices and database-upgrade prompts for
+	 * administrators and super admins -- the people who need to see them.
+	 */
+	if ( bv_user_sees_full_admin() ) {
+		return;
+	}
+
 	remove_all_actions('admin_notices');
 	remove_all_actions('all_admin_notices');
-	//add_action('admin_notices', function () {
-	//echo 'My notice';
-	//});
 }, 1000);
 
 function remove_screen_options($display_boolean, $wp_screen_object){
@@ -83,6 +139,14 @@ function remove_screen_options($display_boolean, $wp_screen_object){
 add_action('admin_head', 'mytheme_remove_help_tabs');
 function mytheme_remove_help_tabs() {
 	$screen = get_current_screen();
+
+	// get_current_screen() returns null in admin contexts where the screen has
+	// not been set, and calling a method on null is a fatal on PHP 8 -- a
+	// white-screen admin page rather than a warning.
+	if ( ! $screen ) {
+		return;
+	}
+
 	$screen->remove_help_tabs();
 }
 add_filter('screen_options_show_screen', '__return_false');

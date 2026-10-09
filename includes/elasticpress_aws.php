@@ -1,14 +1,28 @@
 <?php namespace SignAmazonEsRequests;
 
-// In this example we've included the AWS SDK for PHP using the zip file
-// // see: https://docs.aws.amazon.com/en_pv/sdk-for-php/v3/developer-guide/getting-started_installation.html
-// // First, we load the AWS SDK autoloader so that we may use the classes
-require_once( WP_PLUGIN_DIR . '/amazon-polly/vendor/aws/aws-autoloader.php' );
-//
-// If this file is called directly, abort.
-if ( !defined( 'WPINC' ) ) {
-    die;
-    }
+// If this file is called directly, abort. This guard used to sit *after* the
+// require_once below, so a direct request to
+// /wp-content/plugins/voyage/includes/elasticpress_aws.php ran the AWS SDK
+// autoloader before reaching it.
+if ( ! defined( 'WPINC' ) ) {
+	die;
+}
+
+/*
+ * The AWS SDK is borrowed from another plugin's vendor directory. That is a
+ * single point of failure for the whole network: an unguarded require_once on
+ * a missing file is a fatal on every request, on every site, including
+ * wp-admin -- so deleting or renaming the unrelated amazon-polly plugin took
+ * the network down. ElasticPress 5.x ships its own SigV4 support and this
+ * filter should eventually be retired in favour of it.
+ */
+$bv_aws_autoloader = WP_PLUGIN_DIR . '/amazon-polly/vendor/aws/aws-autoloader.php';
+
+if ( ! class_exists( '\\Aws\\Signature\\SignatureV4' ) && file_exists( $bv_aws_autoloader ) ) {
+	require_once $bv_aws_autoloader;
+}
+
+unset( $bv_aws_autoloader );
 
 // require the classes we'll need
 use Aws\Signature\SignatureV4;
@@ -19,13 +33,35 @@ add_filter( 'http_request_args', __NAMESPACE__ . '\\sign_aws_request', 10, 2 );
 
 function sign_aws_request( array $args, string $url ) : array {
 	$host = parse_url( $url, PHP_URL_HOST );
-        // You'll need to define EP_HOST in wp_config.php for this check to work
-	// If you're using AWS Elasticsearch Service, this would be something like:
-        // https://search-<domain>-<guid>.<region>.es.amazonaws.com
-        // If not requesting elasticpress host, don't sign request
-	if ( !defined('EP_HOST') || strpos(EP_HOST, $host) === false ) {
+
+	/*
+	 * This guard used to FAIL OPEN.
+	 *
+	 * parse_url() returns null for a URL with no host, and strpos($hay, null)
+	 * coerces the needle to '' and returns 0 -- not false. `0 === false` is
+	 * false, so the early return was skipped and the request was signed with
+	 * the live AWS credentials and sent to whatever destination it named. Any
+	 * wp_remote_*() call anywhere in the stack with a schemeless or relative
+	 * URL therefore left here carrying an
+	 * `Authorization: AWS4-HMAC-SHA256 Credential=...` header.
+	 *
+	 * Requiring a host, and requiring the region and credentials up front,
+	 * makes every failure mode "do not sign".
+	 */
+	if ( empty( $host ) || ! defined( 'EP_HOST' ) || strpos( EP_HOST, $host ) === false ) {
 		return $args;
-	} 
+	}
+
+	if ( ! defined( 'AWS_REGION' ) || ! defined( 'ES_AWS_KEY' ) || ! defined( 'ES_AWS_SECRET' ) ) {
+		error_log( 'AWS_REGION, ES_AWS_KEY and ES_AWS_SECRET must be defined in wp-config.php to sign ElasticPress requests' );
+		return $args;
+	}
+
+	if ( ! class_exists( '\\Aws\\Signature\\SignatureV4' ) ) {
+		error_log( 'AWS SDK unavailable; ElasticPress requests will not be signed' );
+		return $args;
+	}
+
 	// otherwise, sign the request using the AWS SDK and return the $args array
 	$request = new Request( $args['method'], $url, $args['headers'], $args['body'] );
 	$signer = new SignatureV4( 'es', AWS_REGION ); // region specific
