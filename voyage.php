@@ -362,34 +362,58 @@ function bv_enqueue_front_end_styles(){
 add_action('wp_enqueue_scripts', 'bv_enqueue_front_end_scripts');
 function bv_enqueue_front_end_scripts() {
 
-	wp_enqueue_script( 'bv-front-end', BV_PLUGIN_DIR_URL . 'assets/js/front-end.js',false);
+	// jQuery is a real dependency of this script and was not declared, so on any
+	// page where jQuery loaded later the file threw on its first line.
+	wp_enqueue_script(
+		'bv-front-end',
+		BV_PLUGIN_DIR_URL . 'assets/js/front-end.js',
+		array( 'jquery' ),
+		filemtime( __DIR__ . '/assets/js/front-end.js' ),
+		true
+	);
 
-	$delete_url = add_query_arg( array(
-		'pms_user'   => get_current_user_id(),
-		'pms_action' => 'pms_delete_subsite',
-		'pms_nonce'  => wp_create_nonce( 'pms-user-own-subsite-deletion'),
-	), home_url());
+	/*
+	 * Only mint the deletion credentials for someone who actually has a site to
+	 * delete. This used to run for every logged-in visitor on every front-end
+	 * page, publishing a ready-to-use URL and a valid nonce into the page
+	 * source — which is how a member with no subsite could reach the destructive
+	 * path at all. See bv_delete_user_subsite().
+	 */
+	$owned_site_id = is_user_logged_in()
+		? absint( get_user_meta( get_current_user_id(), 'user_blog', true ) )
+		: 0;
+
+	$delete_url = '';
+	$delete_nonce = '';
+
+	if ( $owned_site_id > 1 ) {
+		$delete_url   = add_query_arg( array(
+			'pms_user'   => get_current_user_id(),
+			'pms_action' => 'pms_delete_subsite',
+		), home_url() );
+		$delete_nonce = wp_create_nonce( 'pms-user-own-subsite-deletion_' . get_current_user_id() );
+	}
 
 	// Send variables to the javascript file
 	wp_localize_script( 'bv-front-end', 'bvVar', array(
 		'theme_dir_uri'     => get_template_directory_uri(),
 		'delete_url'        => $delete_url,
+		'delete_nonce'      => $delete_nonce,
 		'delete_text'       => sprintf(__('Type %s to confirm deleting your subsite and all data associated with it:', 'paid-member-subscriptions'), 'DELETE' ),
 		'delete_error_text' => sprintf(__('You did not type %s. Try again!', 'paid-member-subscriptions'), 'DELETE' ),
 		'main_tab'          => MAIN_TAB_NAME,
-		'user_email'    =>is_user_logged_in(  )?get_userdata(get_current_user_id())->user_email:'',
+		'user_id'           => get_current_user_id(),
+		'user_email'        => is_user_logged_in() ? get_userdata( get_current_user_id() )->user_email : '',
 	));
 }
 
-/**
- * Redirects to a given url
- * @param string $u The url where you want to send the user
+/*
+ * The global redirect() helper that used to live here has been removed. It
+ * called header('Location: …') on an unvalidated URL and its only live caller
+ * passed $_SERVER['HTTP_REFERER'] straight into it — an open redirect. Call
+ * sites now use wp_safe_redirect(), which restricts the destination to this
+ * host. The name was also a collision risk in the global namespace.
  */
-function redirect($u){
-	header('Location: ' . $u );
-	exit();
-
-}
 
 // /**
 //  * Returns the user site/blog id
@@ -407,16 +431,23 @@ function get_user_blog_id($user_id){
  *
  */
 function bv_remove_subsite_subscription( $user_id, $site_id ) {
-	if(!(get_user_meta( $user_id,'user_blog',true) == $site_id)){
+	$user_id = absint( $user_id );
+	$site_id = absint( $site_id );
+	$owned_id = absint( get_user_meta( $user_id, 'user_blog', true ) );
 
-		print_r(get_user_meta($user_id,'user_blog'));
-		return;
+	// Both sides used to be compared loosely, so a user with no subsite passed
+	// this check with '' == '' and went on to delete nothing-in-particular.
+	// See bv_delete_user_subsite() for what that cost.
+	if ( ! $owned_id || $owned_id !== $site_id ) {
+		return new WP_Error(
+			'bv_not_site_owner',
+			__( 'You do not own that site.', 'paid-member-subscriptions' )
+		);
 	}
-	$plan_id = get_user_meta( $user_id,'private_plan',true);
-	pms_member_delete_user_subscription_abandon($user_id);
-	//error_log(print_r('userid passes'.$user_id,true));
-	$delete_subsite = bv_delete_user_subsite($user_id);
-	return $delete_subsite;
+
+	pms_member_delete_user_subscription_abandon( $user_id );
+
+	return bv_delete_user_subsite( $user_id );
 }
 
 function bv_sync_plans($plan_id_1, $plan_id_2){
@@ -449,88 +480,78 @@ function bv_sync_plans($plan_id_1, $plan_id_2){
  * @param $user_id
  *
  */
-function bv_delete_user_subsite($bv_user_id){
-	if(is_user_logged_in()) {
-		//error_log(print_r('logged in: '. is_user_logged_in()));
-		//error_log(print_r('current user: '. get_current_user_id(),true));
-		//error_log(print_r('passed user: '. $bv_user_id,true));
-		//$user_id=get_current_user_id();
-		//error_log(print_r('passed user: '. $bv_user_id,true));
-	   /* 
-	    if( empty($user_id )){
-		    echo 787;
-	    }else{
-		    echo 121;
-	    }
-	    */
+function bv_delete_user_subsite( $bv_user_id ) {
+	$bv_user_id = absint( $bv_user_id );
 
-		if(get_current_user_id() == $bv_user_id){
-			if(is_super_admin( $bv_user_id )){
-				throw new Exception("Please log in before performing this action");
-			}
-			else{
-				if (!function_exists('wpmu_delete_blog')) {
-					require_once ABSPATH . 'wp-admin/includes/ms.php';
-				}
-				$subsite_id = get_user_meta($bv_user_id, 'user_blog', true);
-				$plan_id = get_user_meta($bv_user_id,'private_plan',true);
-				if($subsite_id == get_main_site_id(  ))throw new Exception('You cannot delete main site');
-				wpmu_delete_blog( $subsite_id, true );
-				delete_user_meta( $bv_user_id, 'user_blog' );
-				delete_user_meta( $bv_user_id, 'private_plan' );
-				switch_to_blog( get_main_site_id() );
-				wp_delete_post( $plan_id ); // Deletes the plan
-				global $wpdb;
-				if ($subsite_id > 10){			 
-					$res = $wpdb->get_results( 'SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = "' . 
-						DB_NAME_BLOGS . '" AND TABLE_NAME LIKE "'. $wpdb->prefix . $subsite_id . '_%"');
-					foreach( $res as $r )
-					{
-						$table_name = $r->TABLE_NAME;
-						$wpdb->query( 'DROP TABLE ' . $table_name );
-					}
-					/*
-					$sql = <<<EOT
-SET GROUP_CONCAT_MAX_LEN=10000;
-SET @tbls = (SELECT GROUP_CONCAT(TABLE_NAME)
-FROM information_schema.TABLES
-EOT;
-					$sql= $sql. ' WHERE TABLE_SCHEMA = "' . DB_NAME_BLOGS . '"';
-					$sql =$sql . ' AND TABLE_NAME LIKE "'. $wpdb->prefix . $subsite_id . '_%");';
-					$sql = $sql . 'SET @delStmt = CONCAT("DROP TABLE ",  @tbls);';
-					//error_log(print_r($sql,true));
-					$wpdb->prepare($sql);	
-					$wpdb->prepare("PREPARE stmt FROM @delStmt;");
-					$wpdb->query("EXECUTE stmt;");
-					$wpdb->query("DEALLOCATE PREPARE stmt;");
-					 */	
-				}
-				/*
-				$table_name = $wpdb->prefix . $subsite_id . '_loginpress_social_login_details';
-				$sql = "DROP TABLE IF EXISTS $table_name";
-				$wpdb->query($sql);
-				$table_name = $wpdb->prefix . $subsite_id . '_loginpress_limit_login_details';
-				$sql = "DROP TABLE IF EXISTS $table_name";
-				$wpdb->query($sql);
-				$table_name = $wpdb->prefix . $subsite_id . '_postmeta_geo';
-				$sql = "DROP TABLE IF EXISTS $table_name";
-				$wpdb->query($sql);
-				$table_name = $wpdb->prefix . $subsite_id . '_termmeta_geo';
-				$sql = "DROP TABLE IF EXISTS $table_name";
-				$wpdb->query($sql);
-				$table_name = $wpdb->prefix . $subsite_id . '_commentmeta_geo';
-				$sql = "DROP TABLE IF EXISTS $table_name";
-				$wpdb->query($sql);
-				*/
-				//$wpgm = WP_GeoMeta::get_instance();
-				//$wpgm->uninstall();
-				return true;
-			}
-		}
-		else{
-			throw new Exception("You need to be logged in with the account you want to delete");
-		}
+	if ( ! is_user_logged_in() || get_current_user_id() !== $bv_user_id ) {
+		return new WP_Error(
+			'bv_not_logged_in',
+			__( 'You need to be logged in with the account you want to delete.', 'paid-member-subscriptions' )
+		);
 	}
+
+	if ( is_super_admin( $bv_user_id ) ) {
+		return new WP_Error(
+			'bv_super_admin',
+			__( 'Super admins cannot delete their own site this way.', 'paid-member-subscriptions' )
+		);
+	}
+
+	$subsite_id = absint( get_user_meta( $bv_user_id, 'user_blog', true ) );
+
+	/*
+	 * Everything below destroys data, so establish first that $subsite_id names
+	 * a real, non-main site.
+	 *
+	 * This previously read the meta value as a string and tested
+	 * `$subsite_id == get_main_site_id()`. For a member with no subsite the
+	 * value is '' and that comparison is false on both PHP 7 and 8, so
+	 * wpmu_delete_blog('', true) ran. Inside core that becomes blog id 0:
+	 * switch_to_blog(0) stays on the serving blog, get_site(0) is null so the
+	 * drop is skipped, and get_users(['blog_id' => 0]) skips the capability
+	 * restriction and returns every user in the network — each of whom then
+	 * had remove_all_caps() called on them. Any logged-in member could strip
+	 * capabilities from everyone on the site serving the request.
+	 */
+	if ( $subsite_id < 2 || $subsite_id === absint( get_main_site_id() ) || ! get_site( $subsite_id ) ) {
+		return new WP_Error(
+			'bv_no_subsite',
+			__( 'There is no site associated with this account to delete.', 'paid-member-subscriptions' )
+		);
+	}
+
+	if ( ! function_exists( 'wpmu_delete_blog' ) ) {
+		require_once ABSPATH . 'wp-admin/includes/ms.php';
+	}
+
+	$plan_id = absint( get_user_meta( $bv_user_id, 'private_plan', true ) );
+
+	/*
+	 * wpmu_delete_blog( $id, true ) drops the site's own tables through
+	 * wp_delete_site(). A hand-rolled information_schema sweep used to run
+	 * afterwards; it has been removed because it was both broken and
+	 * destructive:
+	 *
+	 *  - it referenced DB_NAME_BLOGS, which is defined nowhere in the install,
+	 *    so on PHP 8 it threw a fatal Error *after* the site and the plan post
+	 *    were already gone, leaving the teardown half-finished and the caller's
+	 *    redirect unreached; and
+	 *  - it built `LIKE 'wp_12_%'` without esc_like(). In SQL LIKE, `_` matches
+	 *    any single character, so deleting site 12 also matched — and dropped —
+	 *    the tables of sites 120 through 129.
+	 */
+	wpmu_delete_blog( $subsite_id, true );
+
+	delete_user_meta( $bv_user_id, 'user_blog' );
+	delete_user_meta( $bv_user_id, 'private_plan' );
+
+	if ( $plan_id ) {
+		switch_to_blog( get_main_site_id() );
+		wp_delete_post( $plan_id ); // Deletes the plan.
+		restore_current_blog();     // Previously never called, on any exit path.
+	}
+
+	return true;
 }
 
 
