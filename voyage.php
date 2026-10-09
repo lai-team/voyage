@@ -50,13 +50,72 @@ add_filter( 'acp/storage/file/directory', function() { return __DIR__ . '/acp-se
 
 //add_filter( 'acp/storage/file/directory/writable', '__return_false' );
 
-$role_editor = get_role( 'editor' );
-$role_editor->add_cap( 'manage_options' );
-$role_editor->remove_cap( 'edit_tribe_venues' );
-$role_editor->remove_cap( 'edit_tribe_organizers' );
+/**
+ * Apply this network's role customisations.
+ *
+ * Previously these six lines ran at file scope on every request, which had
+ * three problems:
+ *
+ *  1. get_role() returns null when the role is absent (a subsite whose
+ *     wp_N_user_roles option is missing, or a partial install). Calling
+ *     ->add_cap() on that is a fatal on PHP 8, with no plugin loaded after it.
+ *  2. WP_Role::add_cap() persists to the *current blog's* user_roles option,
+ *     so this issued a database write on any request where the capability was
+ *     not already present.
+ *  3. Most importantly, because it ran on whichever blog served the request,
+ *     editors on the main site were granted manage_options too. That is the
+ *     capability gating Settings and most plugins' admin pages. The grant is
+ *     meant for subsite owners -- bv_create_subsite() makes each owner an
+ *     editor on their own site -- so it is now scoped to subsites only.
+ *
+ * Runs once per version rather than per request; bump BV_ROLE_CAPS_VERSION to
+ * re-apply.
+ */
+define( 'BV_ROLE_CAPS_VERSION', 2 );
 
-$role_contributor = get_role('contributor');
-$role_contributor->add_cap('read_private_posts');
+function bv_apply_role_caps() {
+	if ( (int) get_option( 'bv_role_caps_version' ) === BV_ROLE_CAPS_VERSION ) {
+		return;
+	}
+
+	$is_main_site = ( get_current_blog_id() === (int) get_main_site_id() );
+
+	$role_editor = get_role( 'editor' );
+	if ( $role_editor ) {
+		// Subsite owners are editors on their own site and need to reach
+		// Settings there. Editors on the main site are a different population
+		// and must not inherit it.
+		if ( $is_main_site ) {
+			$role_editor->remove_cap( 'manage_options' );
+		} else {
+			$role_editor->add_cap( 'manage_options' );
+		}
+
+		$role_editor->remove_cap( 'edit_tribe_venues' );
+		$role_editor->remove_cap( 'edit_tribe_organizers' );
+	}
+
+	/*
+	 * NOTE, deliberately unchanged: bv_member_privilege() in
+	 * includes/search_filter.php is literally
+	 * current_user_can('read_private_posts'), so this grant is what makes the
+	 * private-category gate pass -- for members here, and also for the bv_map
+	 * REST endpoint. Because the capability is attached to the contributor
+	 * *role* rather than to a PMS subscription, "is a paying member" currently
+	 * evaluates to "is any contributor".
+	 *
+	 * Tightening that means deciding who should actually see member content,
+	 * and getting it wrong locks paying members out of what they paid for. It
+	 * is left exactly as it was and recorded in README.md instead.
+	 */
+	$role_contributor = get_role( 'contributor' );
+	if ( $role_contributor ) {
+		$role_contributor->add_cap( 'read_private_posts' );
+	}
+
+	update_option( 'bv_role_caps_version', BV_ROLE_CAPS_VERSION );
+}
+add_action( 'init', 'bv_apply_role_caps' );
 
 function var_error_log( $object=null ){
 	ob_start();                    // start buffer capture
