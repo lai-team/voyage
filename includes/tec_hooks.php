@@ -17,7 +17,7 @@
 
 function bv_get_closest_event($post_obj, $mode = 'next', $term_array=array(), $searchposttype='', $taxonomy= 'cat' ) {
 	//$query_posttype = empty($searchposttype)? $current_post->post_type :$searchposttype; 
-	$special_categories_local=$GLOBALS['special_categories'];  
+	$special_categories_local = bv_special_categories();
 	global $wpdb;       
 
 	//$post_obj = get_post( $this->current_event_id );
@@ -102,7 +102,7 @@ function bv_get_closest_event($post_obj, $mode = 'next', $term_array=array(), $s
 
 function bv_tribe_events_adjacent_category( $args, $post){
 	error_log(print_r('tribe_adjacents1: '. json_encode($args),true));
-	$special_categories_local=$GLOBALS['special_categories'];
+	$special_categories_local = bv_special_categories();
 	$category=get_queried_object();	
 	if( $category && is_a($category,'WP_Term') && !in_array($category->slug,$special_categories_local)){
 	//	$args += array(

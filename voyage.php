@@ -125,6 +125,25 @@ function var_error_log( $object=null ){
 	error_log( $contents );        // log contents of the result of var_dump( $object )
 }
 
+/**
+ * Category slugs excluded from journey grouping.
+ *
+ * The $special_categories global is published by the bv_geotagged_media
+ * plugin, with no load-order guarantee and no isset() at any of its consumers.
+ * If that plugin is inactive on the current site the global is undefined, and
+ * in_array( $slug, null ) is a TypeError on PHP 8. bv_map wraps the same global
+ * the same way in includes/compat.php.
+ *
+ * @return string[]
+ */
+function bv_special_categories() {
+	if ( isset( $GLOBALS['special_categories'] ) && is_array( $GLOBALS['special_categories'] ) ) {
+		return $GLOBALS['special_categories'];
+	}
+
+	return array();
+}
+
 function logErrors ( $message ){
 	error_log(print_r($message,true),0,ABSPATH . 'wp-content/debug.log');
 }
@@ -681,6 +700,12 @@ function bv_create_subsite($user_id, $site_url, $site_title, $master_id=PREMIUM_
 	$errors     = $result['errors'];
 
 	if ( $errors->has_errors() ) {
+		// Both were appended to without being initialised, so the first append
+		// warned; and if every error carried severity 'message', $error_messages
+		// was still undefined at the add() below.
+		$messages       = '';
+		$error_messages = '';
+
 		foreach ( $errors->get_error_codes() as $code ) {
 			$severity = $errors->get_error_data( $code );
 			foreach ( $errors->get_error_messages( $code ) as $error_message ) {
@@ -691,7 +716,13 @@ function bv_create_subsite($user_id, $site_url, $site_title, $master_id=PREMIUM_
 				}
 			}
 		}
-		pms_errors()->add('url', __($error_messages, 'paid-member-subsciptions'));
+
+		// Was __($error_messages, 'paid-member-subsciptions') -- __() on a
+		// runtime variable cannot be extracted for translation and does
+		// nothing useful, and the text domain was misspelled. The messages
+		// come from wpmu_validate_blog_signup(), which has already translated
+		// them.
+		pms_errors()->add( 'url', $error_messages !== '' ? $error_messages : $messages );
 		return;
 	}
 
@@ -973,7 +1004,7 @@ function bv_get_adjac_post($current_post, $previous = true, $term_array=array(),
 		'orderby' => 'date',
 	);
 
-	$special_categories_local=$GLOBALS['special_categories'];
+	$special_categories_local = bv_special_categories();
 	$in_same_term = empty($term_array)? false: true;
 	if( $term_array) $arg += array( 'category__and' => $term_array );
 
@@ -985,10 +1016,19 @@ function bv_get_adjac_post($current_post, $previous = true, $term_array=array(),
 	$current_post_date = $current_post->{'post_date'};
 	$adjacent = $previous ? 'previous' : 'next';
 	$arg += array( 'order' => $previous ? 'DESC' : 'ASC');
+	/*
+	 * 'inclusive' => false. WP_Date_Query inherits the top-level 'inclusive'
+	 * into its nested clauses, so `before` became `<=` and the current post
+	 * matched its own "adjacent" query. The theme's load-more
+	 * (digital-nomad-child/functions.php:159, dn_loadn_preview) does not
+	 * de-duplicate, so each page of results repeated the post the reader was
+	 * already on -- its sibling dn_loadn_preview_for_ajax guards against
+	 * exactly this with an explicit ID comparison.
+	 */
 	$arg += array(
-	       	'date_query' => array( 
-			'inclusive' => true,
-			array( $previous ? 'before' : 'after'  => $current_post_date ) 
+	       	'date_query' => array(
+			'inclusive' => false,
+			array( $previous ? 'before' : 'after'  => $current_post_date )
 		)
 	);
 
@@ -1000,7 +1040,7 @@ function bv_get_adjac_post($current_post, $previous = true, $term_array=array(),
 function bv_get_adjacent_post($current_post, $previous = true, $term_array=array(), $searchposttype='', $taxonomy = 'category', $excluded_terms='' ) {
 	$in_same_term = empty($term_array)? false: true;
 	$query_posttype = empty($searchposttype)? $current_post->post_type :$searchposttype;
-	$special_categories_local=$GLOBALS['special_categories'];
+	$special_categories_local = bv_special_categories();
 	global $wpdb;
 
 	//$post = get_post();
