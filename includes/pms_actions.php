@@ -201,9 +201,23 @@ add_action( 'pms_member_subscription_delete',    'bv_gm_update_childrole' , 8, 2
 add_action('bv_privilege_update','bv_gm_update_childrole',10,3);
 function bv_gm_update_childrole($sub_id,$oldsub,$up=false){
 	$blog_id = bv_gm_get_group_blog($sub_id);
-	$user_id = $oldsub['user_id'];
+	$user_id = isset( $oldsub['user_id'] ) ? absint( $oldsub['user_id'] ) : 0;
+
+	// bv_gm_get_group_blog() can return '', and switch_to_blog('') silently
+	// resolves to the current blog rather than failing.
+	if ( ! $blog_id || ! $user_id ) {
+		return;
+	}
+
 	switch_to_blog($blog_id);
-	if(user_can($user_id,'editor')) return;
+
+	// Returned while still switched, leaving the rest of the request on the
+	// group's blog.
+	if ( user_can( $user_id, 'editor' ) ) {
+		restore_current_blog();
+		return;
+	}
+
 	$user_obj = new WP_User($user_id);
 	$user_obj->for_site( $blog_id );
 	if($up){

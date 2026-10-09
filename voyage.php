@@ -735,11 +735,22 @@ function bv_create_subsite($user_id, $site_url, $site_title, $master_id=PREMIUM_
 	// Create a new subscription for the subsite
 	$plan_id = bv_duplicate_subscription($master_id, $site_id, $blog->siteurl);
 
-	// Add values to user meta
-	//add_site_meta( $site_id,'private_plan', $plan_id );
-	restore_current_blog(  );
+	/*
+	 * private_plan belongs to the new subsite, so switch to it explicitly.
+	 *
+	 * This previously read restore_current_blog(); update_option(...);
+	 * restore_current_blog(); -- but the single switch opened above had already
+	 * been closed on the line before, so the stack was empty, both calls were
+	 * no-ops returning false, and the option was written to whichever blog was
+	 * current. On the live path that is the main site, so every new subsite
+	 * overwrote the main site's private_plan. The commented-out
+	 * add_site_meta() directly above shows the intended target.
+	 */
+	switch_to_blog( $site_id );
 	update_option( 'private_plan', $plan_id );
-	restore_current_blog(  );
+	restore_current_blog();
+
+	// Add values to user meta
 	add_user_meta( $user_id,'private_plan', $plan_id );
 	add_user_meta( $user_id,'user_blog', $site_id );
 
@@ -762,9 +773,23 @@ function bv_handle_theme_changes($site_id){
 	// Change to a different theme
 	switch_theme( 'digital-nomad-child' );
 
-        $browser_lang=$_COOKIE['trp_language'];
-        error_log(print_r('cookie lang: '.$browser_lang,true));
-        if(!isset($browser_lang) && substr($browser_lang,0,3) != 'en_'){
+        /*
+         * The condition used to be `!isset($browser_lang) && substr(...)`,
+         * evaluated immediately after assigning $browser_lang -- so isset()
+         * was true whenever the cookie existed and the whole TranslatePress
+         * block was skipped in exactly the case it was written for. When the
+         * cookie was absent it warned on the undefined key, then ran the block
+         * with $browser_lang null, writing update_option('WPLANG', null) and a
+         * trp_settings array with null keys into every new subsite.
+         *
+         * The cookie is also unsanitised visitor input going straight into an
+         * option, so it is sanitised and length-checked here.
+         */
+        $browser_lang = isset( $_COOKIE['trp_language'] )
+                ? sanitize_text_field( wp_unslash( $_COOKIE['trp_language'] ) )
+                : '';
+
+        if ( $browser_lang !== '' && substr( $browser_lang, 0, 3 ) !== 'en_' ) {
                 update_option('WPLANG',$browser_lang);
 
 		$trp_settings=array(
@@ -843,6 +868,14 @@ function bv_handle_theme_changes($site_id){
 		'page_template'  => 'page-templates/gateway.php'
 	));
 	 */
+
+	/*
+	 * This was missing entirely. bv_handle_theme_changes() is the last call in
+	 * bv_create_subsite(), which runs on init on the main site, so from that
+	 * point the whole remaining request rendered against the newly created
+	 * subsite -- wrong table prefix, wrong options, wrong theme.
+	 */
+	restore_current_blog();
 }
 
 
@@ -890,7 +923,12 @@ if ( function_exists( 'pms_get_member_subscriptions' ) ) {
 function bv_gm_get_all_meta_values_by_email( $value ){
 	global $wpdb;
 
-	$result = $wpdb->get_results( $wpdb->prepare( "SELECT meta_id,member_subscription_id FROM {$wpdb->prefix}pms_member_subscriptionmeta WHERE meta_key = 'pms_gm_invited_emails' AND meta_value = %s", $value ), 'OBJECT_K' );
+	// base_prefix, not prefix: PMS keeps a single set of tables on the main
+	// site. With the per-blog prefix, a registration on a subsite queried
+	// wp_12_pms_member_subscriptionmeta, which does not exist -- the query
+	// errored, the function returned false, and the caller then tried to
+	// foreach over it.
+	$result = $wpdb->get_results( $wpdb->prepare( "SELECT meta_id,member_subscription_id FROM {$wpdb->base_prefix}pms_member_subscriptionmeta WHERE meta_key = 'pms_gm_invited_emails' AND meta_value = %s", $value ), 'OBJECT_K' );
 
 	if( !empty( $result ) )
 		return $result;
