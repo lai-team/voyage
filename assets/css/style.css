@@ -1,0 +1,80 @@
+.pms-group-memberships-field{
+    visibility: hidden !important;
+    position: absolute !important;
+}
+#delete-subsite-btn{
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+}
+
+/** PMS ACCOUNT NAVIGATION STYLING - START **/
+
+.pms-account-navigation {
+  width: 100vw !important;
+  max-width: none !important;
+  text-align: center !important;
+}
+
+nav.pms-account-navigation ul {
+  display: inline-flex;
+}
+
+nav.pms-account-navigation ul li a span.dashicons,
+nav.pms-account-navigation ul li a span.dashicons-before:before {
+    display: inline;
+}
+
+nav.pms-account-navigation ul li a span.dashicons:before {
+    padding: 0px 5px;
+}
+
+/* 
+  ##Device = Tablets, Ipads (portrait)
+  ##Screen = B/w 768px to 1024px
+*/
+
+@media (min-width: 768px) and (max-width: 1024px) and (orientation: portrait) {
+	nav.pms-account-navigation ul li a span.dashicons {
+		font-size: 0px;
+	}
+	nav.pms-account-navigation ul li a span.dashicons:before {
+		font-size: x-large;
+	}
+}
+
+/* 
+  ##Device = Tablets, Ipads (landscape)
+  ##Screen = B/w 768px to 1024px
+*/
+
+@media (min-width: 768px) and (max-width: 1024px) and (orientation: landscape) {
+  
+}
+
+/* 
+  ##Device = Low Resolution Tablets, Mobiles (Landscape)
+  ##Screen = B/w 481px to 767px
+*/
+
+@media (min-width: 481px) and (max-width: 767px) and (orientation: landscape) {
+  nav.pms-account-navigation ul li a span.dashicons {
+		font-size: small;
+	}
+}
+
+/* 
+  ##Device = Most of the Smartphones Mobiles (Portrait)
+  ##Screen = B/w 320px to 479px
+*/
+
+@media (min-width: 320px) and (max-width: 480px) and (orientation: portrait) {
+	nav.pms-account-navigation ul li a span.dashicons {
+		font-size: 0px;
+	}
+	nav.pms-account-navigation ul li a span.dashicons:before {
+		font-size: x-large;
+	}
+}
+
+/** PMS ACCOUNT NAVIGATION STYLING - END **/
