@@ -24,8 +24,10 @@ function bv_pms_output_subscription_plans( $output, $include , $exclude_id_group
 
     // Get all subscription plans
     if( empty( $include ) )
-        $subscription_plans = bv_pms_get_subscription_plans();
-        //$subscription_plans = pms_get_subscription_plans();
+        // Called with no arguments against a signature whose first two
+        // parameters are required -- an ArgumentCountError, i.e. fatal, on any
+        // bare [pms-register], [pms-new-subscription] or upgrade form.
+        $subscription_plans = bv_pms_get_subscription_plans( array(), true );
     else {
         if( !is_object( $include[0] ) )
             $subscription_plans = bv_pms_get_subscription_plans([], true, $include );
@@ -217,14 +219,20 @@ function bv_pms_get_output_subscription_plan_trial( $trial_output, $subscription
 
             $used_trial = get_option( 'pms_used_trial_' . $subscription_plan->id, false );
 
-            if( $used_trial !== false && in_array( $user->user_email, $used_trial ) )
+            // in_array() needs an array; a non-array stored option is a
+            // TypeError on PHP 8.
+            if( $used_trial !== false && is_array( $used_trial ) && in_array( $user->user_email, $used_trial ) ) {
+                restore_current_blog();
                 return '';
+            }
 
         }
     }
 
-    if( ! pms_payment_gateways_support( pms_get_active_payment_gateways(), 'subscription_free_trial' ) )
+    if( ! pms_payment_gateways_support( pms_get_active_payment_gateways(), 'subscription_free_trial' ) ) {
+        restore_current_blog();
         return '';
+    }
 
     $trial_duration      = $subscription_plan->trial_duration;
     $trial_duration_unit = '';
@@ -285,8 +293,10 @@ function bv_pms_get_output_subscription_plan_sign_up_fee( $sign_up_output, $subs
         return '';
 
     switch_to_blog(get_main_site_id());
-    if( ! pms_payment_gateways_support( pms_get_active_payment_gateways(), 'subscription_sign_up_fee' ) )
+    if( ! pms_payment_gateways_support( pms_get_active_payment_gateways(), 'subscription_sign_up_fee' ) ) {
+        restore_current_blog();
         return '';
+    }
 
     $sign_up_output = sprintf( __( ' and a %1$s sign-up fee', 'paid-member-subscriptions' ), pms_format_price( $subscription_plan->sign_up_fee, pms_get_active_currency() ), $subscription_plan );
     restore_current_blog();
@@ -373,8 +383,18 @@ function bv_pms_get_subscription_plans( $subscription_plans, $only_active,$inclu
 //error_log('subPlanDebug1: ' . json_encode($subscription_plans,true));
 
     switch_to_blog(get_main_site_id());
-    //$include = array();
-    //$subscription_plans = array();
+
+    /*
+     * Reset rather than append. As a filter on pms_get_subscription_plans this
+     * receives the list PMS has already built, and the loop at the end used to
+     * push onto it -- so every consumer saw each plan twice: admin dropdowns,
+     * the Discount Codes meta box, Email Reminders, the register form's
+     * emptiness check. At priority 20 it also re-introduced plans that the
+     * Fixed Period add-on had just filtered out at the same priority, quietly
+     * defeating that add-on. The sibling function
+     * bv_pms_get_subscription_plan_upgrades() already resets correctly.
+     */
+    $subscription_plans = array();
     $subscription_plan_post_ids = array();
 
     if( empty( $include ) ) {
@@ -396,8 +416,10 @@ function bv_pms_get_subscription_plans( $subscription_plans, $only_active,$inclu
     }
 
     // Return if we don't have any plans by now
-    if( empty( $subscription_plan_post_ids ) )
+    if( empty( $subscription_plan_post_ids ) ) {
+        restore_current_blog();
         return $subscription_plans;
+    }
 
 //error_log('subPlanDebug: ' . json_encode($subscription_plan_post_ids,true));
     foreach( $subscription_plan_post_ids as $subscription_plan_post_id ) {

@@ -16,6 +16,25 @@ if(isset($_POST['register_blog']) && isset($_POST['site_url']) && isset($_POST['
         if(is_user_logged_in() && wp_verify_nonce($_POST['_wp_nonce'], 'pms-user-own-subsite-creation_' . get_current_user_id())){
             $user_id = get_current_user_id();
 
+            /*
+             * Re-assert membership server-side. The only gate was in the
+             * renderer -- shortcode_subscription() emits the form once
+             * bv_get_required_level_status() passes -- so a nonce minted while
+             * a plan was active stayed usable for up to 48 hours after it
+             * lapsed, and the form could be rendered by anything that runs the
+             * shortcode. bv_create_subsite() goes on to grant the user an
+             * editor role on a new network site, so the check belongs here too.
+             */
+            // bv_get_required_level_status() is defined inside a
+            // function_exists('pms_get_member_subscriptions') block in
+            // voyage.php, so guard rather than introduce a new fatal if PMS is
+            // ever deactivated.
+            if ( ! function_exists( 'bv_get_required_level_status' )
+                || ! bv_get_required_level_status( $user_id, BASIC_ID ) ) {
+                pms_errors()->add( 'url', __( 'An active subscription is required to create a site.', 'paid-member-subscriptions' ) );
+                return;
+            }
+
 
             $gdpr_settings = pms_get_gdpr_settings(); // Takes GDPR settings, if GDPR is disabled in wp-admin this will be 'false'
             // If GDPR is required

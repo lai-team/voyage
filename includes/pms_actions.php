@@ -76,7 +76,14 @@ function pms_member_delete_user_subscription_abandon( $user_id = 0 ) {
       $member_subscription_data['subscription_plan_id']=$member_subscription->subscription_plan_id;
       //error_log(print_r('membersub id: ' . $member_subscription->id,true));
       //error_log(print_r('sub id: ' . $member_subscription->subscription_plan_id,true));
-      (new PMS_Group_Memberships())->remove_child_subscriptions($member_subscription->id, $member_subscription_data);
+      // Use the add-on's own instance (class-group-memberships.php:1014).
+      // `new PMS_Group_Memberships()` runs a constructor that registers ~50
+      // hooks, and WordPress keys object callbacks by spl_object_hash, so each
+      // new instance added a further full set for the rest of the request.
+      global $pms_group_memberships;
+      if ( $pms_group_memberships instanceof PMS_Group_Memberships ) {
+      	$pms_group_memberships->remove_child_subscriptions($member_subscription->id, $member_subscription_data);
+      }
       $member_subscription->remove();
           /*
         if( $member_subscription->status == 'active' ) {
@@ -89,7 +96,19 @@ function pms_member_delete_user_subscription_abandon( $user_id = 0 ) {
     }
 }
 
-add_action('pms_abandon_member_subscription_successful','bv_pms_remove_subscription',1,2);
+/*
+ * Priority 20, not 1.
+ *
+ * PMS removes the plan's user role on this same hook at priority 10
+ * (functions-user-roles.php:305). This callback calls
+ * $member_subscription->remove(), whose clear_instance() resets every property
+ * to its default -- including subscription_plan_id, back to 0. Running first
+ * meant PMS then saw empty(0), returned early, and never removed the role, so
+ * members who cancelled kept the role their paid plan granted, and with it
+ * access to everything that role gates. Running after PMS leaves the object
+ * intact until it has finished with it.
+ */
+add_action('pms_abandon_member_subscription_successful','bv_pms_remove_subscription',20,2);
 function bv_pms_remove_subscription($member_data,$member_subscription){
 
 //Fri Jul 16 14:47:39 CEST 2021
@@ -113,12 +132,27 @@ function bv_pms_remove_subscription($member_data,$member_subscription){
         $member_subscription_data=array();
         $member_subscription_data['subscription_plan_id']=$member_subscription->subscription_plan_id;
         //print_r($member_subscription->subscription_plan_id);
-        (new PMS_Group_Memberships())->remove_child_subscriptions($member_subscription->id, $member_subscription_data);
+        // Use the add-on's own instance (class-group-memberships.php:1014).
+        // `new PMS_Group_Memberships()` runs a constructor that registers ~50
+        // hooks, and WordPress keys object callbacks by spl_object_hash, so each
+        // new instance added a further full set for the rest of the request.
+        global $pms_group_memberships;
+        if ( $pms_group_memberships instanceof PMS_Group_Memberships ) {
+        	$pms_group_memberships->remove_child_subscriptions($member_subscription->id, $member_subscription_data);
+        }
         $member_subscription->remove();
 }
 
 add_action('pms_member_subscription_update','bv_pms_update_privileges',10,3);
 function bv_pms_update_privileges($sub_id, $arr_status, $oldsub){
+	// $arr_status is whatever was passed to PMS_Member_Subscription::update(),
+	// which frequently has no 'status' key at all -- the Fixed Period add-on
+	// updating only expiration_date, PayPal updating payment_profile_id. The
+	// unguarded read warned on every such update and passed null to in_array().
+	if ( ! isset( $arr_status['status'] ) ) {
+		return;
+	}
+
 	if (in_array($arr_status['status'], array('expired','abandoned'))){
 		//canceled status can be used for buffer
 		do_action('bv_privilege_update',$sub_id,$oldsub,false);
@@ -187,9 +221,15 @@ function bv_link_user_with_parent_subscriptions($user_id){
 	if ( function_exists( 'pms_get_member_subscriptions' ) ){
 		$user = get_userdata( $user_id );
 		$meta_ids=bv_gm_get_all_meta_values_by_email($user->user_email);
-		error_log(print_r('meta_ids: '. json_encode($meta_ids),true));
+
+		// Returns false, not an empty array, when the registrant was not
+		// invited to a group -- the common case. The unguarded foreach warned
+		// on every single registration.
+		if ( empty( $meta_ids ) || ! is_array( $meta_ids ) ) {
+			return;
+		}
+
 		foreach($meta_ids as $meta_id => $row){
-			error_log(print_r('meta_id_row: '. json_encode($row),true));
 			//var_dump($row->member_subscription_id);
 			$owner_subscription = pms_get_member_subscription( $row->member_subscription_id );
 			$subscription_data = array(
@@ -259,7 +299,10 @@ function bv_abandon_child_subscriptions( $owner_id, $subscription_data ){
 			return;
 
 		foreach( $group_subscriptions as $subscription_id ){
-			bv_update_member_subscription($sub_id,'abandoned');
+			// Was $sub_id, which does not exist in this scope. That made
+			// pms_get_member_subscription(null) build "... WHERE id = ",
+			// return null, and the ->update() below fatal on null.
+			bv_update_member_subscription($subscription_id,'abandoned');
 			//$member_subscription = pms_get_member_subscription( $subscription_id );
 			//$member_subscription->remove();
 		}
@@ -267,9 +310,17 @@ function bv_abandon_child_subscriptions( $owner_id, $subscription_data ){
 }
 
 function bv_update_member_subscription($sub_id,$status='abandoned'){
-	if ( function_exists( 'pms_get_member_subscription' ) ){
-		$sub_obj= pms_get_member_subscription($sub_id);
-		$sub_obj->update(array('status'=>$status));
+	if ( ! $sub_id || ! function_exists( 'pms_get_member_subscription' ) ) {
+		return;
 	}
+
+	$sub_obj = pms_get_member_subscription( $sub_id );
+
+	// pms_get_member_subscription() returns null for an unknown id.
+	if ( ! $sub_obj ) {
+		return;
+	}
+
+	$sub_obj->update( array( 'status' => $status ) );
 }
 

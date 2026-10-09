@@ -1,6 +1,13 @@
 <?php 
 function bv_register_subsite_form() {
 
+    // Both of these are interpolated into the heredoc below unconditionally but
+    // were only assigned inside their respective conditionals, so the common
+    // case -- a consenting user with no validation errors -- emitted two
+    // "Undefined variable" warnings on every render.
+    $error_show   = '';
+    $user_consent = '';
+
     // Checks for pms errors
     $errors = pms_errors()->get_error_messages('url');
     if($errors)
