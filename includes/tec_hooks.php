@@ -15,10 +15,34 @@
 //add_filter( 'tribe_html_credit', 'bv_null',99 );
 
 
+/**
+ * Find the next or previous event relative to a given post.
+ *
+ * Adapted from Tribe__Events__Adjacent_Events::get_closest_event(), with the
+ * class's $this->current_event_id replaced by a $post_obj parameter.
+ *
+ * The Events Calendar is optional on this network -- it is currently not
+ * activated on any site -- so everything this touches is guarded. Without TEC
+ * there is no event post type and therefore no adjacent event: return null,
+ * which is also what the function returns when nothing is found.
+ *
+ * @param WP_Post $post_obj        Post to find the neighbour of.
+ * @param string  $mode            'next' or 'previous'.
+ * @param array   $term_array      Optional terms to restrict to.
+ * @param string  $searchposttype  Unused; kept for call-signature compatibility.
+ * @param string  $taxonomy        Taxonomy for $term_array.
+ * @return WP_Post|null
+ */
 function bv_get_closest_event($post_obj, $mode = 'next', $term_array=array(), $searchposttype='', $taxonomy= 'cat' ) {
-	//$query_posttype = empty($searchposttype)? $current_post->post_type :$searchposttype; 
-	$special_categories_local = bv_special_categories();
-	global $wpdb;       
+	if ( ! function_exists( 'tribe_events' ) || ! class_exists( 'Tribe__Events__Adjacent_Events' ) ) {
+		return null;
+	}
+
+	if ( ! $post_obj instanceof WP_Post ) {
+		return null;
+	}
+
+	//$query_posttype = empty($searchposttype)? $current_post->post_type :$searchposttype;
 
 	//$post_obj = get_post( $this->current_event_id );
 
@@ -70,14 +94,35 @@ function bv_get_closest_event($post_obj, $mode = 'next', $term_array=array(), $s
 	$events_orm->by_args( $args );
 	$query = $events_orm->get_query();
 
-	// Make sure we are not including same datetime events
-	add_filter( 'posts_where', [ $this, 'get_closest_event_where' ] );
+	/*
+	 * Make sure we are not including same datetime events.
+	 *
+	 * These two lines read [ $this, 'get_closest_event_where' ] when this was
+	 * copied out of Tribe__Events__Adjacent_Events, where $this was an
+	 * instance of that class. In a plain function $this is undefined, so both
+	 * lines were a fatal "Using $this when not in object context" -- with TEC
+	 * active as well as without.
+	 *
+	 * get_closest_event_where() does not read any instance state: it recovers
+	 * the post id from the SQL itself. So TEC's own singleton is the correct
+	 * callable, and it keeps the ~100 lines of WHERE-rewriting regex
+	 * maintained upstream rather than copied here. The callable is held in a
+	 * variable so add_filter and remove_filter are given the identical
+	 * instance.
+	 */
+	$bv_tec_adjacent = function_exists( 'tribe' )
+		? tribe( 'tec.adjacent-events' )
+		: new Tribe__Events__Adjacent_Events();
+
+	$bv_closest_where = [ $bv_tec_adjacent, 'get_closest_event_where' ];
+
+	add_filter( 'posts_where', $bv_closest_where );
 
 	// Fetch the posts
 	$query->get_posts();
 
 	// Remove this filter right after fetching the events
-	remove_filter( 'posts_where', [ $this, 'get_closest_event_where' ] );
+	remove_filter( 'posts_where', $bv_closest_where );
 
 	$results = $query->posts;
 
