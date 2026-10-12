@@ -8,6 +8,10 @@
 remove_action('template_redirect','pms_gdpr_delete_user');
 add_action('template_redirect','bv_pms_gdpr_delete_user',20);
 function bv_pms_gdpr_delete_user() {
+    // template_redirect fires on every front-end request.
+    if ( ! function_exists( 'pms_get_gdpr_settings' ) ) {
+        return;
+    }
     $gdpr_settings = pms_get_gdpr_settings();
     if( !empty( $gdpr_settings ) ) {
         if (!empty($gdpr_settings['gdpr_delete']) && $gdpr_settings['gdpr_delete'] === 'enabled') {
@@ -48,6 +52,11 @@ function pms_member_delete_user_subscription_abandon( $user_id = 0 ) {
     if( empty( $user_id ) )
         return;
 
+    // Hooked to core's delete_user, so it runs even where PMS is inactive.
+    if ( ! function_exists( 'pms_get_member_subscriptions' ) ) {
+        return;
+    }
+
     $member_subscriptions = pms_get_member_subscriptions( array( 'user_id' => (int)$user_id ) );
 
     if( empty( $member_subscriptions ) )
@@ -70,7 +79,9 @@ function pms_member_delete_user_subscription_abandon( $user_id = 0 ) {
 
       if( $member_subscription->update( $subscription_data ) ) {
               pms_success()->add( 'subscription_plans', apply_filters( 'pms_abandon_subscription_success', __( 'Your subscription has been successfully removed.', 'paid-member-subscriptions' ) ) );
-              pms_add_member_subscription_log( $member_subscription->id, 'subscription_abandoned' );
+              if ( function_exists( 'pms_add_member_subscription_log' ) ) {
+                  pms_add_member_subscription_log( $member_subscription->id, 'subscription_abandoned' );
+              }
         }
       $member_subscription_data=array();
       $member_subscription_data['subscription_plan_id']=$member_subscription->subscription_plan_id;
@@ -166,7 +177,8 @@ function bv_pms_update_privileges($sub_id, $arr_status, $oldsub){
 add_action('bv_privilege_update','bv_archive_subsite',10,3);
 function bv_archive_subsite($sub_id, $oldsub, $unarchive){
 	$plan_id = $oldsub["subscription_plan_id"];
-	if ($plan_id == BASIC_ID){
+	// BASIC_ID falls back to 0 when unset; 0 must not match.
+	if ( BASIC_ID && $plan_id == BASIC_ID ){
 		$user_id = $oldsub['user_id']; 
 		$blog_id = get_user_meta( $user_id, 'user_blog',true );
 		if ($blog_id) {
@@ -182,13 +194,20 @@ function bv_pms_update_blogspace($sub_id, $oldsub, $up){
 	$user_id=$oldsub['user_id'];
 	$plan_id = get_user_meta( $user_id,'private_plan',true);   
 	if ( !empty($plan_id) && $plan_id == $oldsub['subscription_plan_id']){
-		$blog_id = get_user_meta( $user_id, 'user_blog',true );
+		$blog_id = absint( get_user_meta( $user_id, 'user_blog',true ) );
+		// switch_to_blog() accepts an id that no longer exists (or '' / 0, which
+		// resolves to the current blog) and carries on against missing tables.
+		if ( ! $blog_id || ! get_site( $blog_id ) ) {
+			return;
+		}
 		switch_to_blog($blog_id);
 		$plan_id_blog = get_option('private_plan');
 		if( !empty($plan_id_blog) && $plan_id_blog == $oldsub['subscription_plan_id']){
 			if (!$up){
 				delete_option('blog_upload_space');
-			}else{
+			}elseif ( PREMIUM_SPACE_LIMIT > 0 ){
+				// 0 means the constant is not configured; writing it would give
+				// the site a zero-byte quota.
 				update_option('blog_upload_space',PREMIUM_SPACE_LIMIT);
 			}
 		}
@@ -205,7 +224,7 @@ function bv_gm_update_childrole($sub_id,$oldsub,$up=false){
 
 	// bv_gm_get_group_blog() can return '', and switch_to_blog('') silently
 	// resolves to the current blog rather than failing.
-	if ( ! $blog_id || ! $user_id ) {
+	if ( ! $blog_id || ! $user_id || ! get_site( $blog_id ) ) {
 		return;
 	}
 
@@ -246,6 +265,10 @@ function bv_link_user_with_parent_subscriptions($user_id){
 		foreach($meta_ids as $meta_id => $row){
 			//var_dump($row->member_subscription_id);
 			$owner_subscription = pms_get_member_subscription( $row->member_subscription_id );
+			// Null if the owner's subscription row has since been deleted.
+			if ( ! $owner_subscription ) {
+				continue;
+			}
 			$subscription_data = array(
 				'user_id'              => $user->ID,
 				'subscription_plan_id' => $owner_subscription->subscription_plan_id,
@@ -304,7 +327,7 @@ function bv_abandon_child_subscriptions( $owner_id, $subscription_data ){
 
 		$plan = pms_get_subscription_plan( $subscription_data['subscription_plan_id'] );
 
-		if( $plan->type == 'regular' )
+		if( empty( $plan ) || $plan->type == 'regular' )
 			return;
 
 		$group_subscriptions = pms_gm_get_group_subscriptions( $owner_id );

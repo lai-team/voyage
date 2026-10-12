@@ -4,8 +4,12 @@
 add_action( 'pre_get_posts', 'bv_search_subsites');
 function bv_search_subsites($query){
 	if (get_current_blog_id()==get_main_site_id() && in_array($query->get('post_type') ,array('post',EVENTS_POSTTYPE) )){
-		$query->set( 'ep_integrate', 'true') ;
-		$query->set( 'sites' ,'all') ;
+		// ElasticPress query vars; without the plugin the main site searches only
+		// itself, which is the correct degraded behaviour.
+		if ( bv_dependency_available( 'elasticpress' ) ) {
+			$query->set( 'ep_integrate', 'true') ;
+			$query->set( 'sites' ,'all') ;
+		}
 		$query->set( 'posts_per_page', 10) ;
 		//$query->set( 'order', 'DESC') ;
 		//$query->set( 'orderby', 'date') ;

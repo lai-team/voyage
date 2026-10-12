@@ -8,11 +8,16 @@ function bv_journey_stats($journey_id){
 		'posts_per_page'  => -1));
 
 	$geom_points= array_filter(array_map(function($id){return get_post_meta($id,'geom_point',true);},$post_ids) );  
-	if(class_exists('WP_GeoUtil')){
-	       	$lineString=WP_GeoUtil::linestring(...$geom_points);  
-		$distance=WP_GeoUtil::st_length($lineString) ;
+	// A line needs two points. WP_GeoUtil also returns null for any function its
+	// (locally patched, see README) get_capabilities() does not list, so check
+	// each step rather than feeding null onward.
+	if ( count( $geom_points ) > 1 && bv_dependency_available( 'geometa' ) ) {
+	       	$lineString=WP_GeoUtil::linestring(...array_values($geom_points));
+		$distance = $lineString ? WP_GeoUtil::st_length($lineString) : null;
 
-		$stats['degree']=$distance;
+		if ( null !== $distance ) {
+			$stats['degree']=$distance;
+		}
 		//$stats['km']=$distance * $factor * 111.139;
 		//$stats['mile']=$distance * $factor * 69 ;
 		//$stats['nm']=$distance * $factor * 60 ;

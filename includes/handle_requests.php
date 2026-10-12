@@ -12,6 +12,10 @@ defined( 'ABSPATH' ) || exit;
 // Handle subsite registration
 if(isset($_POST['register_blog']) && isset($_POST['site_url']) && isset($_POST['title']) && isset($_POST['_wp_nonce']) ){
     function temp_create_subsite(){
+        // Everything below is PMS API; bv_create_subsite() re-checks the rest.
+        if ( ! function_exists( 'pms_errors' ) || ! function_exists( 'pms_get_gdpr_settings' ) ) {
+            return;
+        }
         // Check if user is logged in then verify the nonce value to make sure this is a valid request
         if(is_user_logged_in() && wp_verify_nonce($_POST['_wp_nonce'], 'pms-user-own-subsite-creation_' . get_current_user_id())){
             $user_id = get_current_user_id();
@@ -71,7 +75,7 @@ if(isset($_POST['register_blog']) && isset($_POST['site_url']) && isset($_POST['
  */
 if ( isset( $_POST['pms_action'] ) && 'pms_delete_subsite' === $_POST['pms_action'] ) {
     function temp_delete_subsite() {
-        if ( ! is_user_logged_in() ) {
+        if ( ! is_user_logged_in() || ! function_exists( 'pms_errors' ) ) {
             return;
         }
 

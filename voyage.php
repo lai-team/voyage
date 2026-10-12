@@ -26,6 +26,9 @@ define("BV_PLUGIN_DIR_URL",plugin_dir_url( __FILE__ ) );
 //define("BV_PLUGIN_DIR",plugin_dir_path( __FILE__ ) );
 //define("MIN_LENGTH_URL",7);
 
+// First: defines fallbacks for missing wp-config.php constants and the helpers
+// every guard below relies on.
+require_once __DIR__ . '/includes/dependencies.php';
 require_once  __DIR__ . '/shortcodes/shortcodes.php';
 include_once(ABSPATH . WPINC . '/ms-functions.php' );
 include_once(ABSPATH . 'wp-admin/includes/ms.php' );
@@ -191,12 +194,17 @@ function bv_userlocation(){
 	if (function_exists('geoip_detect2_get_info_from_current_ip') ){       
 		switch_to_blog(get_main_site_id());      
 		//$user_location= geoip_detect2_get_info_from_ip(geoip_detect2_get_client_ip(), $locales = array('en'), $options = array())-> location;     
-		$user_location= geoip_detect2_get_info_from_current_ip() -> location;
+		$info = geoip_detect2_get_info_from_current_ip();
 		restore_current_blog();
-	}else{
+		// A lookup can return a WP_Error or an object with no location (private
+		// IPs, a missing database); fall through to the default rather than
+		// reading ->location off it.
+		$user_location = ( is_object( $info ) && isset( $info->location ) ) ? $info->location : null;
+	}
+	if ( empty( $user_location ) ) {
 		$user_location= (object) array('latitude'=>1,'longitude'=>-1);
 	}
-	return $user_location??NULL;
+	return $user_location;
 }
 
 function richedit_wp_cloudfront () {
@@ -421,8 +429,9 @@ function pmsc_custom_tab_content( $output, $active_tab ) {
 		$output .= do_shortcode( '[shortcode_subscription]' );
 		$user_id = get_current_user_id();
 		$blog_id = get_user_meta( $user_id, 'user_blog',true );
-		$blog=get_blog_details($blog_id);
-		if($blog_id)
+		$blog = $blog_id ? get_blog_details( $blog_id ) : false;
+		// The site may have been deleted while user_blog meta lingers.
+		if ( $blog )
 			$output .= "<button name='delete_blog' value='$user_id' type='submit' id='delete-subsite-btn'>Delete Blog - ".$blog->blogname ."</button>";
 	}
 
@@ -453,7 +462,7 @@ function bv_enqueue_front_end_scripts() {
 		'bv-front-end',
 		BV_PLUGIN_DIR_URL . 'assets/js/front-end.js',
 		array( 'jquery' ),
-		filemtime( __DIR__ . '/assets/js/front-end.js' ),
+		bv_asset_version( __DIR__ . '/assets/js/front-end.js' ),
 		false
 	);
 
@@ -530,6 +539,7 @@ function bv_remove_subsite_subscription( $user_id, $site_id ) {
 		);
 	}
 
+	// Defined in includes/pms_actions.php, which no-ops without PMS.
 	pms_member_delete_user_subscription_abandon( $user_id );
 
 	return bv_delete_user_subsite( $user_id );
@@ -546,6 +556,12 @@ function bv_sync_plans($plan_id_1, $plan_id_2){
 
 	$meta_keys = get_post_custom_keys( $plan_id_1 );
 	$to_skip = array( '_edit_lock', '_edit_last' );
+
+	// null when the master plan has no meta, which is also what an unconfigured
+	// PREMIUM_ID (0) leads to.
+	if ( empty( $meta_keys ) || ! $plan_id_2 || ! get_post( $plan_id_2 ) ) {
+		return;
+	}
 
 	foreach( $meta_keys as $key ){
 		if( in_array( $key, $to_skip ) )
@@ -666,7 +682,7 @@ function bv_duplicate_subscription( $post_id,  $post_name, $post_title) {
 	$meta_keys = get_post_custom_keys( $post_id );
 	$to_skip = array( '_edit_lock', '_edit_last' );
 
-	foreach( $meta_keys  as $key ){
+	foreach( (array) $meta_keys  as $key ){
 		if( in_array( $key, $to_skip ) )
 			continue;
 
@@ -694,6 +710,20 @@ function min_url_length( $length ) {
 function bv_create_subsite($user_id, $site_url, $site_title, $master_id=PREMIUM_ID){
 	if(!$master_id)$master_id=PREMIUM_ID;
 	if(get_user_meta( $user_id, 'user_blog'))return;
+
+	/*
+	 * wpmu_create_blog() below is the first irreversible step; the steps after
+	 * it need WP-GeoMeta, a premium plan to duplicate and PMS. Finding any of
+	 * them missing afterwards would leave a created-but-unfinished site and an
+	 * unbalanced switch_to_blog() stack, so refuse up front.
+	 */
+	if ( ! bv_can_create_subsites() ) {
+		bv_log_dependency_problem( 'create_subsite', 'subsite creation refused: needs Paid Member Subscriptions, WP-GeoMeta and BASIC_ID/PREMIUM_ID in wp-config.php' );
+		if ( function_exists( 'pms_errors' ) ) {
+			pms_errors()->add( 'url', __( 'Site creation is temporarily unavailable.', 'paid-member-subscriptions' ) );
+		}
+		return;
+	}
 	// Illegal names array
 	//$illegal_names = array( 'www', 'web', 'root', 'admin', MAIN_TAB_NAME, 'invite', 'administrator','nottest' );
 	//update_site_option( 'illegal_names', $illegal_names );
@@ -741,17 +771,20 @@ function bv_create_subsite($user_id, $site_url, $site_title, $master_id=PREMIUM_
 		//echo "Load taxonomy";
 		require_once ABSPATH . 'wp-admin/includes/taxonomy.php';
 	}
+	// A term on the main site; absent if someone deleted or renamed it.
 	$cat_obj=get_category_by_slug( 'private' );
 	switch_to_blog( $site_id );
 	$wpgm = WP_GeoMeta::get_instance(); 
 	$wpgm->install();
-	wp_update_term(1, 'category', array(
-		'name' => $cat_obj->name,
-		'slug' => $cat_obj->slug,
-		'description' => $cat_obj->description,
-		//'name' => 'Standalone Post',
-		//'slug' => 'standalone'                                                                                                                                                        
-	));    
+	if ( $cat_obj instanceof WP_Term ) {
+		wp_update_term(1, 'category', array(
+			'name' => $cat_obj->name,
+			'slug' => $cat_obj->slug,
+			'description' => $cat_obj->description,
+			//'name' => 'Standalone Post',
+			//'slug' => 'standalone'
+		));
+	}
 	// 'Hello World!' post
 	wp_delete_post( 1, true );
 	// 'Sample page' page
@@ -808,8 +841,14 @@ function bv_create_subsite($user_id, $site_url, $site_title, $master_id=PREMIUM_
 function bv_handle_theme_changes($site_id){
 
 	switch_to_blog( $site_id );
-	// Change to a different theme
-	switch_theme( 'digital-nomad-child' );
+	// Change to a different theme. switch_theme() accepts a stylesheet that is not
+	// installed and writes it to the options anyway, leaving the new site on a
+	// broken theme.
+	if ( wp_get_theme( 'digital-nomad-child' )->exists() ) {
+		switch_theme( 'digital-nomad-child' );
+	} else {
+		bv_log_dependency_problem( 'theme_digital_nomad_child', 'theme digital-nomad-child is not installed; new subsites keep the default theme' );
+	}
 
         /*
          * The condition used to be `!isset($browser_lang) && substr(...)`,
@@ -827,7 +866,10 @@ function bv_handle_theme_changes($site_id){
                 ? sanitize_text_field( wp_unslash( $_COOKIE['trp_language'] ) )
                 : '';
 
-        if ( $browser_lang !== '' && substr( $browser_lang, 0, 3 ) !== 'en_' ) {
+        // The language/URL settings are TranslatePress's; skip them if it is not
+        // there to read them. The machine-translation key is a wp-config.php
+        // constant that falls back to ''.
+        if ( $browser_lang !== '' && substr( $browser_lang, 0, 3 ) !== 'en_' && bv_dependency_available( 'trp' ) ) {
                 update_option('WPLANG',$browser_lang);
 
 		$trp_settings=array(
@@ -848,7 +890,7 @@ function bv_handle_theme_changes($site_id){
 		update_option('trp_settings',$trp_settings);
 
 		$trp_machine_translation_settings=array(
-			"machine-translation"=>'yes' ,
+			"machine-translation"=> GOOG_TRANSLATEv2_KEY !== '' ? 'yes' : 'no' ,
 			"translation-engine" =>  "google_translate_v2",
 			"block-crawlers"=> 'yes',
 			"machine_translation_counter_date"=>"2020-06-07" ,
@@ -917,49 +959,63 @@ function bv_handle_theme_changes($site_id){
 }
 
 
-if ( function_exists( 'pms_get_member_subscriptions' ) ) {
-	global $wpdb;
-	/**
-	 * Return the users subsciptions levels
-	 * @param int $u_id the id of the user
-	 * @return array|boolean 'level' and 'status' or if none false
-	 */
-	function bv_get_user_levels($u_id){
-		switch_to_blog( get_main_site_id() );
-		$levels = @(new PMS_Member($u_id))->get_subscriptions();
-		// print_r($levels);
-		restore_current_blog(  );
-		return $levels;
-	}
-	/**
-	 * Decides if a user meets the minimum level requirement
-	 * @param int $u_id the id of the user
-	 * @param int $minlevel the minimum level required
-	 * @return string
-	 */
-	function bv_get_required_level_status($u_id, $acceptable_leveles){
-		$levels = bv_get_user_levels($u_id);
-		// print_r($levels);
-		if(!$levels) return false;
-		foreach($levels as $level){
-			if($level['subscription_plan_id'] == $acceptable_leveles){
-				// print_r($subscription_plan->name);   
-				if ( in_array($level['status'] ,array('active',
-								//'pending',
-								'canceled'))) return true;
-				else return false;
-				// else if($level['status'] == 'pending')$pending=true; 
-			}
-			// print_r(pms_get_subscription_plan($level->subscription_plan_id));
-			// if ($level['level']>=$minlevel && $level['status']=='active') return 'active'; 
-		}
-		//return $pending;
+/*
+ * These two used to be defined inside `if ( function_exists( 'pms_get_member_
+ * subscriptions' ) )` at file scope. That is a load-order test, not a
+ * dependency test: if PMS had not loaded yet the functions were silently never
+ * defined, and callers (shortcode_subscription(), temp_create_subsite()) then
+ * fataled on an undefined function. They are always defined now and check PMS
+ * when called.
+ */
 
+/**
+ * Return the users subsciptions levels
+ * @param int $u_id the id of the user
+ * @return array|boolean 'level' and 'status' or if none false
+ */
+function bv_get_user_levels($u_id){
+	if ( ! bv_dependency_available( 'pms' ) ) {
+		return false;
 	}
+
+	switch_to_blog( get_main_site_id() );
+	$levels = @(new PMS_Member($u_id))->get_subscriptions();
+	restore_current_blog(  );
+	return $levels;
+}
+/**
+ * Decides if a user meets the minimum level requirement
+ * @param int $u_id the id of the user
+ * @param int $acceptable_leveles the plan id required
+ * @return bool
+ */
+function bv_get_required_level_status($u_id, $acceptable_leveles){
+	// An unconfigured plan id is 0; never let that match a real subscription.
+	if ( ! $acceptable_leveles ) {
+		return false;
+	}
+
+	$levels = bv_get_user_levels($u_id);
+	if(!$levels) return false;
+	foreach($levels as $level){
+		if($level['subscription_plan_id'] == $acceptable_leveles){
+			if ( in_array($level['status'] ,array('active',
+							//'pending',
+							'canceled'))) return true;
+			else return false;
+		}
+	}
+	return false;
 }
 
 function bv_gm_get_all_meta_values_by_email( $value ){
 	global $wpdb;
+
+	// Reads PMS's own table directly; without PMS (or its group add-on) the table
+	// does not exist and the query would raise a database error.
+	if ( ! bv_dependency_available( 'pms' ) ) {
+		return false;
+	}
 
 	// base_prefix, not prefix: PMS keeps a single set of tables on the main
 	// site. With the per-blog prefix, a registration on a subsite queried

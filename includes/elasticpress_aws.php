@@ -57,21 +57,34 @@ function sign_aws_request( array $args, string $url ) : array {
 		return $args;
 	}
 
-	if ( ! class_exists( '\\Aws\\Signature\\SignatureV4' ) ) {
-		error_log( 'AWS SDK unavailable; ElasticPress requests will not be signed' );
+	if ( ! bv_dependency_available( 'aws_sdk' ) ) {
+		bv_log_dependency_problem( 'aws_sdk', 'AWS SDK unavailable (is amazon-polly active?); ElasticPress requests will not be signed' );
 		return $args;
 	}
 
-	// otherwise, sign the request using the AWS SDK and return the $args array
-	$request = new Request( $args['method'], $url, $args['headers'], $args['body'] );
-	$signer = new SignatureV4( 'es', AWS_REGION ); // region specific
-	if ( defined( 'ES_AWS_KEY' ) ) {
+	/*
+	 * This filter sits on every wp_remote_*() call that targets EP_HOST. A
+	 * Throwable out of the signer -- a SDK upgrade changing a signature, an
+	 * empty credential -- would otherwise abort whatever request triggered the
+	 * search or index call. Send it unsigned instead; the endpoint will reject
+	 * it and ElasticPress will report that, which is a better failure than a
+	 * white screen.
+	 */
+	try {
+		// otherwise, sign the request using the AWS SDK and return the $args array
+		$request = new Request(
+			isset( $args['method'] ) ? $args['method'] : 'GET',
+			$url,
+			isset( $args['headers'] ) ? (array) $args['headers'] : array(),
+			isset( $args['body'] ) ? $args['body'] : null
+		);
+		$signer = new SignatureV4( 'es', AWS_REGION ); // region specific
 		$credentials = new Credentials( ES_AWS_KEY, ES_AWS_SECRET );
 		$signed_request = $signer->signRequest( $request, $credentials );
 		$args['headers']['Authorization'] = $signed_request->getHeader( 'Authorization' )[0];
 		$args['headers']['X-Amz-Date'] = $signed_request->getHeader( 'X-Amz-Date' )[0];
-	} else {
-		error_log('ES_AWS_KEY & ES_AWS_SECRET must be defined in wp_config.php');
+	} catch ( \Throwable $e ) {
+		bv_log_dependency_problem( 'aws_sign_failure', 'could not sign ElasticPress request: ' . $e->getMessage() );
 	}
 	return $args;
 }

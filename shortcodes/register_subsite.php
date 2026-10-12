@@ -1,6 +1,11 @@
 <?php 
 function bv_register_subsite_form() {
 
+    // PMS supplies the error store, the GDPR settings and the field renderer.
+    if ( ! function_exists( 'pms_errors' ) || ! function_exists( 'pms_get_gdpr_settings' ) || ! function_exists( 'pms_display_field_errors' ) ) {
+        return '';
+    }
+
     // Both of these are interpolated into the heredoc below unconditionally but
     // were only assigned inside their respective conditionals, so the common
     // case -- a consenting user with no validation errors -- emitted two

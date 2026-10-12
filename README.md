@@ -84,6 +84,7 @@ voyage.php                        Bootstrap, role capabilities, subsite lifecycl
 shortcodes/shortcodes.php         Loader for the shortcode files
 shortcodes/register_subsite.php   Subsite registration form
 shortcodes/shortcode_subscription.php  Plan picker
+includes/dependencies.php         Constant fallbacks, plugin availability checks, admin notice
 includes/pms_actions.php          Paid Member Subscriptions actions, GDPR deletion
 includes/pms_filters.php          Plan output and membership filters
 includes/search_filter.php        Cross-subsite search; private-category exclusion
@@ -101,6 +102,28 @@ acp-settings/                     Admin Columns Pro layouts (written at runtime)
 assets/                           Admin/front CSS and JS, white-label script
 ```
 
+## Missing dependencies
+
+Every external resource is declared in `includes/dependencies.php` and checked
+where it is used, so a deactivated plugin or a constant dropped from
+`wp-config.php` disables the feature instead of fataling the request.
+
+- **Constants** get an inert fallback at load: `BASIC_ID`/`PREMIUM_ID`/
+  `PREMIUM_SPACE_LIMIT` → `0` (matches no plan, leaves quotas untouched),
+  `MIN_LENGTH_URL` → `4`, `EVENTS_POSTTYPE` → `tribe_events`, the Google keys →
+  `''` (never written over a key configured elsewhere). `EP_HOST`, `ES_AWS_*`
+  and `AWS_REGION` get **no** fallback, because ElasticPress reads them too.
+- **Plugins** are tested at call time with `bv_dependency_available( $key )`,
+  never at file scope, since plugin load order is not guaranteed.
+  `bv_get_user_levels()` and `bv_get_required_level_status()` used to be defined
+  only if PMS had loaded first; they are always defined now.
+- **Subsite creation** is refused up front unless PMS, WP-GeoMeta and both plan
+  ids are present (`bv_can_create_subsites()`), because it creates the blog before
+  the steps that need them. A missing `digital-nomad-child` theme or `private`
+  category is skipped rather than assumed.
+- A **network admin notice** lists missing required plugins and constants, and
+  problems are logged at most once an hour each.
+
 ## Behaviour worth knowing before you change anything
 
 - **Role capabilities are mutated on every request.** `voyage.php:56-62` runs at
@@ -111,7 +134,8 @@ assets/                           Admin/front CSS and JS, white-label script
   outside any activation hook.
 - **The AWS SDK is borrowed from another plugin.** `includes/elasticpress_aws.php:6`
   loads `WP_PLUGIN_DIR . '/amazon-polly/vendor/aws/aws-autoloader.php'`.
-  Deactivating or removing Amazon Polly breaks ElasticPress signing.
+  Removing Amazon Polly stops ElasticPress requests being signed (they are
+  sent unsigned and the endpoint rejects them); it no longer fatals.
 - **`acp-settings/` is written at runtime.** `voyage.php` points Admin Columns
   Pro's file storage at this directory via the `acp/storage/file/directory`
   filter. The files are intended to be version-controlled, but editing columns

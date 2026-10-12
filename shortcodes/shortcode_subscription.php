@@ -1,6 +1,13 @@
 <?php
 
 function shortcode_subscription($plan1=BASIC_ID,$premiumid=PREMIUM_ID){
+    // Renders PMS shortcodes and checks PMS subscriptions; without PMS or with
+    // unset plan ids there is nothing meaningful to show, and the raw
+    // [pms-subscriptions] text would leak into the page.
+    if ( ! bv_dependency_available( 'pms' ) || ! bv_plans_configured() ) {
+        return '';
+    }
+
     $user_id = get_current_user_id();
     //$plan1 = 456;
     if(!$plan1)$plan1=BASIC_ID;

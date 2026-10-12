@@ -58,7 +58,7 @@ function admin_style() {
 		'admin-styles',
 		plugins_url( 'assets/css/admin.css', dirname( __FILE__ ) ),
 		array(),
-		filemtime( dirname( __DIR__ ) . '/assets/css/admin.css' )
+		bv_asset_version( dirname( __DIR__ ) . '/assets/css/admin.css' )
 	);
 }
 add_action('admin_enqueue_scripts', 'admin_style');
@@ -85,7 +85,7 @@ function enqueue_gutenberg_js() {
 		// includes/assets/js/… -- a directory that does not exist.
 		plugins_url( 'assets/js/whitelabel.js', dirname( __FILE__ ) ),
 		array( 'wp-element', 'wp-editor', 'wp-hooks' ),
-		filemtime( dirname( __DIR__ ) . '/assets/js/whitelabel.js' )
+		bv_asset_version( dirname( __DIR__ ) . '/assets/js/whitelabel.js' )
 	);
 }
 
@@ -100,7 +100,7 @@ function cc_gutenberg_register_files() {
 		// the script 404'd and never ran.
 		plugins_url( 'assets/js/block-script.js', dirname( __FILE__ ) ),
 		array( 'wp-blocks', 'wp-edit-post' ),
-		filemtime( dirname( __DIR__ ) . '/assets/js/block-script.js' )
+		bv_asset_version( dirname( __DIR__ ) . '/assets/js/block-script.js' )
 	);
 
 	// register block editor script
